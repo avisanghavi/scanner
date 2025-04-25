@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "MRZScanner",
-    "slug": "MRZScanner",
+    "name": "mrzscanner",
+    "slug": "mrzscanner",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -11,21 +11,38 @@
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSCameraUsageDescription": "This app uses the camera to scan MRZ."
-      }
+        "NSCameraUsageDescription": "This app needs access to the camera to scan MRZ codes.",
+        "NSMicrophoneUsageDescription": "This app does not use the microphone.",
+        "NSPhotoLibraryUsageDescription": "This app does not access your photos.",
+        "NSPhotoLibraryAddUsageDescription": "This app does not save photos."
+      },
+      "requireFullScreen": true
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "permissions": ["android.permission.CAMERA","android.permission.INTERNET"]
+      "permissions": [
+        "android.permission.CAMERA"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera to scan MRZ codes."
+        }
+      ]
+    ]
   }
 }
