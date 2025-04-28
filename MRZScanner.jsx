@@ -10,9 +10,9 @@ const htmlContent = String.raw`<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="viewport-fit=cover, width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
-    <script src="dbr.js"></script>
-    <script src="dce.js"></script>
-    <script src="dlr.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dynamsoft-javascript-barcode@9.6.20/dist/dbr.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dynamsoft-camera-enhancer@3.3.4/dist/dce.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dynamsoft-label-recognizer@2.2.31/dist/dlr.js"></script>
     <title>MRZ Scanner</title>
     <style>
       body { margin: 0; padding: 0; overflow: hidden; }
@@ -385,12 +385,9 @@ export default function MRZScanner({ onMRZRead, onClose }) {
       </View>
       <WebView
         style={styles.webview}
-        source={{
+        source={{ 
           html: htmlContent,
-          baseUrl:
-            Platform.OS === 'android'
-              ? 'file:///android_asset/js/'
-              : FileSystem.bundleDirectory + 'assets/js/'
+          baseUrl: 'https://dynamsoft.com'
         }}
         onMessage={handleMessage}
         mediaPlaybackRequiresUserAction={false}
