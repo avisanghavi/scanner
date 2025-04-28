@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { WebView } from 'react-native-webview';
 import { StyleSheet, View, Text, TouchableOpacity, SafeAreaView, Image, Platform, StatusBar } from 'react-native';
 import { Camera } from 'expo-camera';
+import * as FileSystem from 'expo-file-system';
 
 const htmlContent = String.raw`<!DOCTYPE html>
 <html lang="en">
@@ -9,9 +10,9 @@ const htmlContent = String.raw`<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="viewport-fit=cover, width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
-    <script src="https://cdn.jsdelivr.net/npm/dynamsoft-javascript-barcode@9.6.20/dist/dbr.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/dynamsoft-camera-enhancer@3.3.4/dist/dce.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/dynamsoft-label-recognizer@2.2.31/dist/dlr.js"></script>
+    <script src="dbr.js"></script>
+    <script src="dce.js"></script>
+    <script src="dlr.js"></script>
     <title>MRZ Scanner</title>
     <style>
       body { margin: 0; padding: 0; overflow: hidden; }
@@ -198,6 +199,25 @@ const htmlContent = String.raw`<!DOCTYPE html>
   </body>
 </html>`;
 
+const saveScanToFile = async (scanData) => {
+  try {
+    const fileUri = FileSystem.documentDirectory + 'scans.json';
+    let existing = [];
+    // Check if file exists and read existing data
+    const fileInfo = await FileSystem.getInfoAsync(fileUri);
+    if (fileInfo.exists) {
+      const content = await FileSystem.readAsStringAsync(fileUri);
+      existing = content ? JSON.parse(content) : [];
+    }
+    // Add new scan
+    existing.push(scanData);
+    await FileSystem.writeAsStringAsync(fileUri, JSON.stringify(existing, null, 2));
+    alert('Scan saved!');
+  } catch (e) {
+    alert('Failed to save scan: ' + e.message);
+  }
+};
+
 export default function MRZScanner({ onMRZRead, onClose }) {
   const [hasPermission, setHasPermission] = useState(null);
 
@@ -365,9 +385,12 @@ export default function MRZScanner({ onMRZRead, onClose }) {
       </View>
       <WebView
         style={styles.webview}
-        source={{ 
+        source={{
           html: htmlContent,
-          baseUrl: 'https://dynamsoft.com'
+          baseUrl:
+            Platform.OS === 'android'
+              ? 'file:///android_asset/js/'
+              : FileSystem.bundleDirectory + 'assets/js/'
         }}
         onMessage={handleMessage}
         mediaPlaybackRequiresUserAction={false}

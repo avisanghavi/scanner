@@ -10,6 +10,7 @@ import {
   ScrollView,
 } from 'react-native';
 import MRZScanner from './MRZScanner';
+import * as FileSystem from 'expo-file-system';
 
 const parseMRZ = (mrzText) => {
   try {
@@ -27,7 +28,13 @@ const parseMRZ = (mrzText) => {
     const namePart = lines[0].slice(5);
     const nameComponents = namePart.split('<<');
     const surname = nameComponents[0].replace(/</g, ' ').trim();
-    const givenNames = nameComponents[1] ? nameComponents[1].replace(/</g, ' ').trim() : '';
+    let firstName = '';
+    let middleName = '';
+    if (nameComponents[1]) {
+      const givenNamesArr = nameComponents[1].replace(/</g, ' ').trim().split(' ').filter(Boolean);
+      firstName = givenNamesArr[0] || '';
+      middleName = givenNamesArr.length > 1 ? givenNamesArr.slice(1).join(' ') : '';
+    }
     const documentNumber = lines[1].slice(0, 9).trim();
     const nationality = lines[1].slice(10, 13).trim();
     const dateOfBirth = lines[1].slice(13, 19).trim();
@@ -38,7 +45,8 @@ const parseMRZ = (mrzText) => {
       documentType,
       issuingCountry,
       surname,
-      givenNames,
+      firstName,
+      middleName,
       documentNumber,
       nationality,
       dateOfBirth,
@@ -71,9 +79,32 @@ const formatMRZDate = (dateStr, isExpiryDate = false) => {
   return `${day}/${month}/${fullYear}`;
 };
 
+const saveScanToFile = async (scanData) => {
+  try {
+    const fileUri = FileSystem.documentDirectory + 'scans.json';
+    let existing = [];
+    // Check if file exists and read existing data
+    const fileInfo = await FileSystem.getInfoAsync(fileUri);
+    if (fileInfo.exists) {
+      const content = await FileSystem.readAsStringAsync(fileUri);
+      existing = content ? JSON.parse(content) : [];
+    }
+    // Add new scan with timestamp
+    const scanWithTimestamp = {
+      ...scanData,
+      savedAt: new Date().toISOString(),
+    };
+    existing.push(scanWithTimestamp);
+    await FileSystem.writeAsStringAsync(fileUri, JSON.stringify(existing, null, 2));
+    alert('Scan saved!');
+  } catch (e) {
+    alert('Failed to save scan: ' + e.message);
+  }
+};
+
 const ResultRow = ({ label, value }) => (
   <View style={styles.resultRow}>
-    <Text style={styles.resultLabel}>{label}:</Text>
+    <Text style={styles.resultLabel} numberOfLines={1}>{label}:</Text>
     <Text style={styles.resultValue}>{value}</Text>
   </View>
 );
@@ -82,13 +113,17 @@ const ScanResults = ({ parsedData }) => (
   <View>
     <ResultRow label="Document Type" value={parsedData.documentType} />
     <ResultRow label="Surname" value={parsedData.surname} />
-    <ResultRow label="Given Names" value={parsedData.givenNames} />
+    <ResultRow label="First Name" value={parsedData.firstName} />
+    <ResultRow label="Middle Name" value={parsedData.middleName} />
     <ResultRow label="Document Number" value={parsedData.documentNumber} />
     <ResultRow label="Nationality" value={parsedData.nationality} />
     <ResultRow label="Date of Birth" value={formatMRZDate(parsedData.dateOfBirth, false)} />
     <ResultRow label="Sex" value={parsedData.sex} />
     <ResultRow label="Expiry Date" value={formatMRZDate(parsedData.expiryDate, true)} />
     <ResultRow label="Issuing Country" value={parsedData.issuingCountry} />
+    {parsedData.savedAt && (
+      <ResultRow label="Saved At" value={new Date(parsedData.savedAt).toLocaleString()} />
+    )}
   </View>
 );
 
@@ -102,6 +137,9 @@ const ErrorDisplay = ({ error, rawData }) => (
 export default function App() {
   const [showScanner, setShowScanner] = useState(false);
   const [lastScan, setLastScan] = useState(null);
+  const [savedScans, setSavedScans] = useState([]);
+  const [showSavedScans, setShowSavedScans] = useState(false);
+  const [scanConfirmed, setScanConfirmed] = useState(false);
 
   const handleScan = (data) => {
     const parsedData = parseMRZ(data);
@@ -110,7 +148,24 @@ export default function App() {
       parsed: parsedData,
       error: !parsedData ? 'Could not parse MRZ data' : null
     });
+    setScanConfirmed(false);
     setShowScanner(false);
+  };
+
+  const loadSavedScans = async () => {
+    try {
+      const fileUri = FileSystem.documentDirectory + 'scans.json';
+      const fileInfo = await FileSystem.getInfoAsync(fileUri);
+      if (fileInfo.exists) {
+        const content = await FileSystem.readAsStringAsync(fileUri);
+        setSavedScans(content ? JSON.parse(content) : []);
+      } else {
+        setSavedScans([]);
+      }
+      setShowSavedScans(true);
+    } catch (e) {
+      alert('Failed to load scans: ' + e.message);
+    }
   };
 
   if (showScanner) {
@@ -144,14 +199,59 @@ export default function App() {
             <Text style={styles.buttonText}>Start Scanner</Text>
           </TouchableOpacity>
 
+          <TouchableOpacity
+            style={[styles.startButton, { backgroundColor: '#888', marginTop: 16 }]}
+            onPress={loadSavedScans}
+          >
+            <Text style={styles.buttonText}>View Saved Scans</Text>
+          </TouchableOpacity>
+
           {lastScan && (
             <View style={styles.lastScanContainer}>
               <Text style={styles.lastScanTitle}>Last Scan Result:</Text>
               {lastScan.parsed ? (
-                <ScanResults parsedData={lastScan.parsed} />
+                <>
+                  <ScanResults parsedData={lastScan.parsed} />
+                  {!scanConfirmed ? (
+                    <TouchableOpacity
+                      style={[styles.startButton, {marginTop: 16, backgroundColor: '#007AFF'}]}
+                      onPress={() => setScanConfirmed(true)}
+                    >
+                      <Text style={styles.buttonText}>Confirm</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      style={[styles.startButton, {marginTop: 16, backgroundColor: '#34c759'}]}
+                      onPress={() => saveScanToFile(lastScan.parsed)}
+                    >
+                      <Text style={styles.buttonText}>Save Scan</Text>
+                    </TouchableOpacity>
+                  )}
+                </>
               ) : (
                 <ErrorDisplay error={lastScan.error} rawData={lastScan.raw} />
               )}
+            </View>
+          )}
+
+          {showSavedScans && (
+            <View style={styles.savedScansContainer}>
+              <Text style={styles.lastScanTitle}>Saved Scans:</Text>
+              {savedScans.length === 0 ? (
+                <Text style={styles.errorText}>No saved scans found.</Text>
+              ) : (
+                savedScans.map((scan, idx) => (
+                  <View key={idx} style={styles.savedScanCard}>
+                    <ScanResults parsedData={scan} />
+                  </View>
+                ))
+              )}
+              <TouchableOpacity
+                style={[styles.startButton, { backgroundColor: '#FF3B30', marginTop: 8 }]}
+                onPress={() => setShowSavedScans(false)}
+              >
+                <Text style={styles.buttonText}>Close</Text>
+              </TouchableOpacity>
             </View>
           )}
         </View>
@@ -253,18 +353,23 @@ const styles = StyleSheet.create({
   },
   resultRow: {
     flexDirection: 'row',
-    paddingVertical: 8,
+    alignItems: 'center',
+    paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: '#eee',
   },
   resultLabel: {
-    flex: 1,
-    fontWeight: '600',
+    width: 150,
+    fontWeight: '700',
     color: '#666',
+    marginRight: 10,
+    fontSize: 15,
   },
   resultValue: {
-    flex: 2,
+    flex: 1,
     color: '#333',
+    fontSize: 15,
+    textAlign: 'left',
   },
   errorContainer: {
     padding: 16,
@@ -292,5 +397,26 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#999',
     marginTop: 5,
+  },
+  savedScansContainer: {
+    marginTop: 20,
+    padding: 8,
+    alignItems: 'center',
+  },
+  savedScanCard: {
+    backgroundColor: '#f9f9fb',
+    borderRadius: 12,
+    padding: 20,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: '#e1e1e1',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.10,
+    shadowRadius: 6,
+    elevation: 3,
+    minWidth: 320,
+    maxWidth: 420,
+    width: '90%',
   },
 });
