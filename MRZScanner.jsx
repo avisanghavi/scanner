@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { WebView } from 'react-native-webview';
-import { StyleSheet, View, Text, TouchableOpacity, SafeAreaView, Image, Platform, StatusBar } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, SafeAreaView, Image, Platform, StatusBar, TextInput, ScrollView, ActivityIndicator, Alert } from 'react-native';
 import { Camera } from 'expo-camera';
 import * as FileSystem from 'expo-file-system';
 
@@ -75,7 +75,7 @@ const htmlContent = String.raw`<!DOCTYPE html>
           await enhancer.setUIElement(document.querySelector(".dce-video-container"));
           
           // Initialize label recognizer
-          recognizer = await Dynamsoft.DLR.LabelRecognizer.createInstance();
+        recognizer = await Dynamsoft.DLR.LabelRecognizer.createInstance();
           
           // Set MRZ recognition settings
           await recognizer.updateRuntimeSettingsFromString("MRZ");
@@ -147,7 +147,7 @@ const htmlContent = String.raw`<!DOCTYPE html>
               console.error("Error processing result:", error);
               updateStatus("Error: " + error.message);
               
-              if (window.ReactNativeWebView) {
+            if (window.ReactNativeWebView) {
                 window.ReactNativeWebView.postMessage(JSON.stringify({
                   type: 'error',
                   error: error.message
@@ -199,6 +199,87 @@ const htmlContent = String.raw`<!DOCTYPE html>
   </body>
 </html>`;
 
+const TravelInfoSection = ({ data, onUpdate }) => (
+  <View style={styles.sectionContainer}>
+    <Text style={styles.sectionTitle}>Travel Information</Text>
+    <View style={styles.travelInfoGrid}>
+      <View style={styles.travelInfoRow}>
+        <View style={styles.travelInfoField}>
+          <Text style={styles.fieldLabel}>Carrier</Text>
+          <TextInput
+            style={styles.input}
+            value={data.carrier}
+            onChangeText={(text) => onUpdate({ ...data, carrier: text })}
+            placeholder="Enter carrier"
+          />
+        </View>
+        <View style={styles.travelInfoField}>
+          <Text style={styles.fieldLabel}>Routing</Text>
+          <TextInput
+            style={styles.input}
+            value={data.routing}
+            onChangeText={(text) => onUpdate({ ...data, routing: text })}
+            placeholder="Enter routing"
+          />
+        </View>
+      </View>
+      <View style={styles.travelInfoRow}>
+        <View style={styles.travelInfoField}>
+          <Text style={styles.fieldLabel}>Flight Number</Text>
+          <TextInput
+            style={styles.input}
+            value={data.flightNumber}
+            onChangeText={(text) => onUpdate({ ...data, flightNumber: text })}
+            placeholder="Enter flight number"
+          />
+        </View>
+        <View style={styles.travelInfoField}>
+          <Text style={styles.fieldLabel}>Date of Flight</Text>
+          <TextInput
+            style={styles.input}
+            value={data.dateOfFlight}
+            onChangeText={(text) => onUpdate({ ...data, dateOfFlight: text })}
+            placeholder="DD/MM/YYYY"
+          />
+        </View>
+      </View>
+      <View style={styles.travelInfoRow}>
+        <View style={styles.travelInfoField}>
+          <Text style={styles.fieldLabel}>Seats</Text>
+          <TextInput
+            style={styles.input}
+            value={data.seats}
+            onChangeText={(text) => onUpdate({ ...data, seats: text })}
+            placeholder="Enter seat numbers"
+          />
+        </View>
+        <View style={styles.travelInfoField}>
+          <Text style={styles.fieldLabel}>Assistance Request</Text>
+          <TextInput
+            style={styles.input}
+            value={data.assistanceRequest}
+            onChangeText={(text) => onUpdate({ ...data, assistanceRequest: text })}
+            placeholder="Enter assistance needs"
+          />
+        </View>
+      </View>
+      <View style={styles.travelInfoRow}>
+        <View style={[styles.travelInfoField, { flex: 1 }]}>
+          <Text style={styles.fieldLabel}>Remarks</Text>
+          <TextInput
+            style={[styles.input, { height: 80 }]}
+            value={data.remarks}
+            onChangeText={(text) => onUpdate({ ...data, remarks: text })}
+            placeholder="Enter any additional remarks"
+            multiline={true}
+            numberOfLines={3}
+          />
+        </View>
+      </View>
+    </View>
+  </View>
+);
+
 const saveScanToFile = async (scanData) => {
   try {
     const fileUri = FileSystem.documentDirectory + 'scans.json';
@@ -218,41 +299,18 @@ const saveScanToFile = async (scanData) => {
   }
 };
 
-export default function MRZScanner({ onMRZRead, onClose }) {
+const MRZScanner = ({ onScan, onClose }) => {
   const [hasPermission, setHasPermission] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const webViewRef = useRef(null);
 
   useEffect(() => {
     (async () => {
       const { status } = await Camera.requestCameraPermissionsAsync();
-      setHasPermission(status === "granted");
+      setHasPermission(status === 'granted');
     })();
   }, []);
-
-  if (hasPermission === null) {
-    return (
-      <SafeAreaView style={styles.loadingContainer}>
-        <Text style={styles.loadingText}>Requesting camera permission...</Text>
-      </SafeAreaView>
-    );
-  }
-
-  if (hasPermission === false) {
-    return (
-      <SafeAreaView style={styles.errorContainer}>
-        <Image 
-          source={{ uri: 'https://cdn-icons-png.flaticon.com/512/1680/1680012.png' }}
-          style={styles.errorIcon}
-        />
-        <Text style={styles.errorTitle}>Camera Access Required</Text>
-        <Text style={styles.errorText}>
-          Please enable camera access in your device settings to use the MRZ scanner.
-        </Text>
-        <TouchableOpacity style={styles.errorButton} onPress={onClose}>
-          <Text style={styles.errorButtonText}>Close Scanner</Text>
-        </TouchableOpacity>
-      </SafeAreaView>
-    );
-  }
 
   const handleMessage = (event) => {
     const message = event.nativeEvent.data;
@@ -268,9 +326,9 @@ export default function MRZScanner({ onMRZRead, onClose }) {
       const data = JSON.parse(message);
       console.log("Parsed JSON:", data);
 
-      if (data.type === 'success' && data.data && data.data.mrzText) {
-        // Send the raw MRZ text to the parent component
-        onMRZRead(data.data.mrzText);
+      if (data.type === 'success' && data.data) {
+        // Pass the entire data object to the parent component
+        onScan(data.data);
       } else {
         console.error("Invalid data structure:", data);
         Alert.alert(
@@ -289,200 +347,140 @@ export default function MRZScanner({ onMRZRead, onClose }) {
     }
   };
 
-  const parseMRZ = (mrzText) => {
-    try {
-      if (!mrzText || typeof mrzText !== 'string') {
-        console.error('Invalid MRZ text:', mrzText);
-        return null;
-      }
-
-      // Clean the MRZ text
-      const cleanText = mrzText.replace(/\s/g, '').toUpperCase();
-      console.log("Cleaned MRZ Text:", cleanText);
-
-      // Split into lines if it's a single line
-      let lines;
-      if (cleanText.includes('\n')) {
-        lines = cleanText.split('\n');
-      } else {
-        // For single line, split at position 44 (standard MRZ format)
-        lines = [
-          cleanText.substring(0, 44),
-          cleanText.substring(44)
-        ];
-      }
-
-      console.log("Split Lines:", lines);
-
-      if (lines.length < 2) {
-        console.error('Not enough lines in MRZ text');
-        return null;
-      }
-
-      const line1 = lines[0];
-      const line2 = lines[1];
-
-      console.log("Line 1:", line1);
-      console.log("Line 2:", line2);
-
-      // Extract document type and country code
-      const documentType = line1.substring(0, 2).trim();
-      const countryCode = line1.substring(2, 5).trim();
-      
-      // Extract name parts
-      const nameParts = line1.substring(5).split('<<').filter(Boolean);
-      const surname = nameParts[0]?.replace(/</g, ' ').trim() || '';
-      const givenNames = nameParts[1]?.replace(/</g, ' ').trim() || '';
-      
-      // Extract data from line 2
-      const documentNumber = line2.substring(0, 9).trim();
-      const nationality = line2.substring(10, 13).trim();
-      const birthDate = line2.substring(13, 19).trim();
-      const sex = line2.substring(20, 21).trim();
-      const expiryDate = line2.substring(21, 27).trim();
-      const personalNumber = line2.substring(28, 42).trim();
-      const checkDigits = line2.substring(42).trim();
-
-      // Format dates
-      const formatDate = (dateStr) => {
-        if (!dateStr || dateStr.length !== 6) return '';
-        const year = parseInt(dateStr.substring(0, 2));
-        const month = dateStr.substring(2, 4);
-        const day = dateStr.substring(4, 6);
-        return '20' + year + '-' + month + '-' + day;
-      };
-
-      const parsedData = {
-        documentType,
-        countryCode,
-        surname,
-        givenNames,
-        documentNumber,
-        nationality,
-        birthDate: formatDate(birthDate),
-        sex,
-        expiryDate: formatDate(expiryDate),
-        personalNumber,
-        checkDigits,
-        mrzText: cleanText
-      };
-
-      console.log("Final Parsed Data:", parsedData);
-      return parsedData;
-    } catch (error) {
-      console.error('Error parsing MRZ:', error);
-      return null;
-    }
+  const handleError = (error) => {
+    console.error('WebView error:', error);
+    setError('Failed to load scanner');
   };
 
-  return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.closeButton} onPress={onClose}>
-          <Text style={styles.closeButtonText}>✕</Text>
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>MRZ Scanner</Text>
+  const handleLoadEnd = () => {
+    setIsLoading(false);
+  };
+
+  if (hasPermission === null) {
+    return (
+      <View style={styles.container}>
+        <ActivityIndicator size="large" color="#007AFF" />
       </View>
+    );
+  }
+
+  if (hasPermission === false) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.errorText}>No access to camera</Text>
+        <TouchableOpacity style={styles.button} onPress={onClose}>
+          <Text style={styles.buttonText}>Close</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.container}>
       <WebView
-        style={styles.webview}
+        ref={webViewRef}
         source={{ 
           html: htmlContent,
           baseUrl: 'https://dynamsoft.com'
         }}
+        style={styles.webview}
         onMessage={handleMessage}
-        mediaPlaybackRequiresUserAction={false}
+        onError={handleError}
+        onLoadEnd={handleLoadEnd}
         javaScriptEnabled={true}
         domStorageEnabled={true}
+        startInLoadingState={true}
+        scalesPageToFit={true}
+        mixedContentMode="always"
         allowsInlineMediaPlayback={true}
+        mediaPlaybackRequiresUserAction={false}
         allowsFullscreenVideo={true}
         allowFileAccess={true}
         allowFileAccessFromFileURLs={true}
         allowUniversalAccessFromFileURLs={true}
         originWhitelist={['*']}
-        mixedContentMode="always"
         useWebKit={true}
         onShouldStartLoadWithRequest={() => true}
-        startInLoadingState={true}
         bounces={false}
         scrollEnabled={false}
-        onError={(syntheticEvent) => {
-          const { nativeEvent } = syntheticEvent;
-          console.warn('WebView error:', nativeEvent);
-        }}
-        onHttpError={(syntheticEvent) => {
-          const { nativeEvent } = syntheticEvent;
-          console.warn('WebView HTTP error:', nativeEvent);
-        }}
       />
-      <View style={styles.footer}>
-        <Text style={styles.footerText}>
-          Position the MRZ zone within the frame
-        </Text>
-      </View>
-    </SafeAreaView>
+      
+      {isLoading && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#007AFF" />
+          <Text style={styles.loadingText}>Loading scanner...</Text>
+        </View>
+      )}
+
+      {error && (
+        <View style={styles.errorOverlay}>
+          <Text style={styles.errorText}>{error}</Text>
+          <TouchableOpacity style={styles.button} onPress={() => setError(null)}>
+            <Text style={styles.buttonText}>Try Again</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      <TouchableOpacity style={styles.closeButton} onPress={onClose}>
+        <Text style={styles.closeButtonText}>Close</Text>
+      </TouchableOpacity>
+    </View>
   );
-}
+};
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000',
-    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0,
   },
-  loadingContainer: {
+  webview: {
     flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
+  },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
     justifyContent: 'center',
-    padding: 20,
+    alignItems: 'center',
   },
   loadingText: {
-    fontSize: 18,
-    color: '#333',
-    textAlign: 'center',
+    color: '#fff',
+    marginTop: 10,
+    fontSize: 16,
   },
-  errorContainer: {
-    flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
+  errorOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
     justifyContent: 'center',
+    alignItems: 'center',
     padding: 20,
   },
-  errorIcon: {
-    width: 80,
-    height: 80,
-    marginBottom: 20,
-    tintColor: '#FF3B30',
-  },
-  errorTitle: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#333',
-    marginBottom: 10,
-    textAlign: 'center',
-  },
   errorText: {
+    color: '#fff',
     fontSize: 16,
-    color: '#666',
     textAlign: 'center',
-    marginBottom: 30,
-    lineHeight: 24,
+    marginBottom: 20,
   },
-  errorButton: {
-    backgroundColor: '#FF3B30',
-    paddingHorizontal: 30,
-    paddingVertical: 15,
-    borderRadius: 25,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
+  button: {
+    backgroundColor: '#007AFF',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 8,
   },
-  errorButtonText: {
+  buttonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  closeButton: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 50 : 20,
+    right: 20,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  closeButtonText: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
@@ -502,30 +500,54 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '600',
   },
-  closeButton: {
-    position: 'absolute',
-    left: 20,
-    padding: 10,
-  },
-  closeButtonText: {
-    color: '#fff',
-    fontSize: 24,
-    fontWeight: '300',
-  },
-  webview: {
+  formContainer: {
     flex: 1,
-    backgroundColor: '#000',
-  },
-  footer: {
+    backgroundColor: '#f5f5f7',
     padding: 20,
-    backgroundColor: 'rgba(0, 0, 0, 0.8)',
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.1)',
   },
-  footerText: {
-    color: '#fff',
+  sectionContainer: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 16,
+  },
+  travelInfoGrid: {
+    gap: 16,
+  },
+  travelInfoRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 12,
+  },
+  travelInfoField: {
+    flex: 1,
+  },
+  fieldLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#666',
+    marginBottom: 8,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    padding: 12,
     fontSize: 16,
-    textAlign: 'center',
-    opacity: 0.9,
+    backgroundColor: '#fff',
+    color: '#333',
   },
 });
+
+export default MRZScanner;

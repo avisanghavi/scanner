@@ -38,11 +38,12 @@
     },
     "plugins": [
       [
-        "expo-camera",
+        "expo-sqlite",
         {
-          "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera to scan MRZ codes."
+          "enableSQLite": true
         }
       ]
-    ]
+    ],
+    "newArchEnabled": true
   }
 }
