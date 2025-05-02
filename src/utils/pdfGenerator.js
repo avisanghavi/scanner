@@ -1,607 +1,273 @@
-import * as Print from 'expo-print';
+import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import { Asset } from 'expo-asset';
 
-// Helper function to format date from YYMMDD to mm-dd-yyyy
-const formatDate = (dateString) => {
-  if (!dateString) return '';
+// Helper function to format date from YYMMDD or other formats to MM/DD/YYYY
+const formatDate = (dateStr) => {
+  if (!dateStr || typeof dateStr !== 'string') return '';
   
-  // Handle different date formats
-  if (dateString.includes('/')) {
-    // Already formatted as DD/MM/YYYY
-    const parts = dateString.split('/');
-    if (parts.length === 3) {
-      return `${parts[1]}-${parts[0]}-${parts[2]}`;
+  // Check if already in MM/DD/YYYY format (or similar)
+  if (dateStr.includes('/') || dateStr.includes('-')) {
+      try {
+          const date = new Date(dateStr);
+          if (!isNaN(date.getTime())) {
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const year = date.getFullYear();
+            return `${month}/${day}/${year}`;
+          }
+      } catch (e) {
+          // Ignore parsing errors, fall through
+      }
+  }
+
+  // Handle YYMMDD format
+  if (dateStr.length === 6 && /^\d+$/.test(dateStr)) {
+    const year = dateStr.substring(0, 2);
+    const month = dateStr.substring(2, 4);
+    const day = dateStr.substring(4, 6);
+    
+    let fullYear;
+    const currentYearLastTwoDigits = new Date().getFullYear() % 100;
+    // Heuristic: if YY is greater than current year + 10, assume 19YY, otherwise 20YY
+    fullYear = parseInt(year) > (currentYearLastTwoDigits + 10) ? `19${year}` : `20${year}`;
+    
+    // Validate month and day
+    if (parseInt(month) >= 1 && parseInt(month) <= 12 && parseInt(day) >= 1 && parseInt(day) <= 31) {
+        return `${month}/${day}/${fullYear}`;
     }
-    return dateString;
   }
   
-  // If in YYMMDD format (like '740812')
-  if (dateString.length === 6) {
-    const year = dateString.substring(0, 2);
-    const month = dateString.substring(2, 4);
-    const day = dateString.substring(4, 6);
-    const fullYear = parseInt(year) > 50 ? `19${year}` : `20${year}`;
-    return `${month}-${day}-${fullYear}`;
-  }
-  
-  return dateString;
+  console.warn(`Could not format date: ${dateStr}`);
+  return dateStr; // Return original if formatting fails
 };
 
-const generateFormPDF = async (scanData) => {
+const fillPdfForm = async (scanData) => {
   try {
-    // Format birth date if available
-    const formattedBirthDate = formatDate(scanData.dateOfBirth);
+    console.log('Starting PDF generation with scan data:', scanData);
+
+    // --- 1. Load PDF Template ---
+    const templateAsset = Asset.fromModule(require('../../assets/DS3.pdf'));
+    await templateAsset.downloadAsync(); // Ensure asset is downloaded
+
+    const templateUri = templateAsset.localUri || templateAsset.uri;
+    console.log('Template URI:', templateUri);
     
-    // Determine document type
-    const isPassport = scanData.documentType === 'P' || scanData.documentType === 'Passport';
-    
-    // Format sex checkbox selections
-    const maleChecked = scanData.sex === 'M' ? 'checked' : '';
-    const femaleChecked = scanData.sex === 'F' ? 'checked' : '';
-    
-    // Full place of birth combines city, state, country
+    // Read the template file as base64
+    const templateBytesBase64 = await FileSystem.readAsStringAsync(templateUri, {
+      encoding: FileSystem.EncodingType.Base64
+    });
+    console.log('Template loaded (Base64 size):', templateBytesBase64.length);
+
+    // Load the PDF document using pdf-lib
+    const pdfDoc = await PDFDocument.load(templateBytesBase64);
+    console.log('PDF document loaded. Pages:', pdfDoc.getPageCount());
+
+    // Get the form from the document
+    const form = pdfDoc.getForm();
+    console.log('PDF form obtained.');
+
+    // --- 2. Map Scan Data to Form Fields ---
+    // Updated field names based on PDF object inspection
     const placeOfBirth = [
       scanData.birthCity || '',
       scanData.birthState || '',
       scanData.birthCountry || ''
     ].filter(Boolean).join(', ');
     
-    // Combine emergency contact name
-    const emergencyContactName = [scanData.emergencyFirstName, scanData.emergencyLastName]
-      .filter(Boolean)
-      .join(' ');
-      
-    // Format place of birth for form field #6
-    const formattedPlaceOfBirth = placeOfBirth || `${scanData.birthCity || ''}, ${scanData.birthState || ''}, ${scanData.birthCountry || ''}`;
+    const fieldMapping = {
+      // Page 1 Fields
+      'LName': scanData.surname,                                // 6 0 obj
+      'FName': scanData.firstName,                              // 9 0 obj
+      'MName': scanData.middleName,                             // 11 0 obj
+      'Edit49': scanData.ssn,                                   // 13 0 obj (Item 4 SSN)
+      'DOB': formatDate(scanData.dateOfBirth),                  // 18 0 obj (Item 5 Date of Birth)
+      'POB': placeOfBirth,                                      // 22 0 obj (Item 6 Place of Birth - combined)
+      'Edit64': formatDate(scanData.expiryDate),                 // 147 0 obj (Expiration Date)
+      'Coun': scanData.issuingCountry,                          // 36 0 obj (Visually Issuing Country)
+      'Edit66': scanData.documentNumber,                         // 41 0 obj (Visually Passport No.)
+      'Lodg': scanData.currentLodging,                          // 53 0 obj (Item 10a Current Lodging)
+      'Phone': scanData.phoneNumber,                            // 56 0 obj (Item 10b Current Phone)
+      'Email': scanData.email,                                  // 59 0 obj (Item 10c Current Email)
+      'Edit35': scanData.medicalConditions,                     // 62 0 obj (Item 11 Medical Conditions)
+      'one': scanData.billingAddress1,                          // 65 0 obj (Item 14 Billing Address 1)
+      'two': scanData.billingAddress2,                          // 68 0 obj (Item 15 Billing Address 2)
+      'cit': scanData.billingCity,                              // 71 0 obj (Item 16 Billing City)
+      'state': scanData.billingState,                           // 74 0 obj (Item 17 Billing State)
+      'Countr': scanData.billingCountry,                        // 77 0 obj (Item 18 Billing Country)
+      'Post': scanData.billingPostalCode,                       // 80 0 obj (Item 19 Billing Postal Code)
+      'tele': scanData.billingPhone,                            // 83 0 obj (Item 20 Billing Phone)
+      'Em': scanData.billingEmail,                              // 86 0 obj (Item 21 Billing Email)
+      'LN': scanData.emergencyLastName,                         // 89 0 obj (Item 23 Emergency Contact Last Name)
+      'FN': scanData.emergencyFirstName,                        // 91 0 obj (Item 24 Emergency Contact First Name)
+      'Add': scanData.emergencyAddress1,                        // 93 0 obj (Item 25 Emergency Contact Address 1)
+      'Edit39': scanData.emergencyAddress2,                     // 96 0 obj (Item 26 Emergency Contact Address 2)
+      'Ci': scanData.emergencyCity,                             // 99 0 obj (Item 27 Emergency Contact City)
+      'S': scanData.emergencyState,                             // 101 0 obj (Item 28 Emergency Contact State)
+      'count': scanData.emergencyCountry,                       // 103 0 obj (Item 29 Emergency Contact Country)
+      'Pc': scanData.emergencyPostalCode,                       // 105 0 obj (Item 30 Emergency Contact Postal Code)
+      'Tel': scanData.emergencyPhone,                           // 107 0 obj (Item 31 Emergency Contact Phone)
+      'Ema': scanData.emergencyEmail,                           // 109 0 obj (Item 32 Emergency Contact Email)
+      'rel': scanData.emergencyRelationship,                    // 111 0 obj (Item 33 Emergency Contact Relationship)
+      'Edit20': scanData.accompanyingPersons,                   // 212 0 obj (Item 34 Accompanying Persons)
 
-    const htmlContent = `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no" />
-          <style>
-            @page {
-              size: letter;
-              margin: 0.5in;
+      // Fields from Page 2 (if needed, assuming they exist based on object list structure)
+      // 'Lna': scanData.surname, // 119 0 obj
+      // 'Fir': scanData.firstName, // 122 0 obj
+      // 'Mi': scanData.middleName, // 124 0 obj
+      // 'SSn1': scanData.ssn, // 126 0 obj
+      // 'Date2': formatDate(scanData.dateOfBirth), // 130 0 obj
+      // 'Edit10': placeOfBirth, // 134 0 obj
+      // 'Edit65': scanData.documentNumber, // 149 0 obj
+      // 'Edit69': scanData.issuingCountry, // 151 0 obj
+      // 'Edit11': formatDate(scanData.expiryDate), // 199 0 obj
+      // 'Edit8': scanData.nationality, // 197 0 obj
+      // 'LasN': scanData.surname, // 167 0 obj
+      // 'FirsN': scanData.firstName, // 169 0 obj
+      // 'Mid': scanData.middleName, // 171 0 obj
+      // 'SSNu': scanData.ssn, // 173 0 obj
+      // 'Date1': formatDate(scanData.dateOfBirth), // 178 0 obj
+      // 'POB2': placeOfBirth, // 182 0 obj
+      // 'Edit7': scanData.documentNumber, // 195 0 obj
+    };
+    
+    console.log('Filling text fields with corrected names...');
+    Object.entries(fieldMapping).forEach(([fieldName, value]) => {
+        if (value !== undefined && value !== null && String(value).trim() !== '') { // Check for non-empty strings
+            try {
+                const field = form.getTextField(fieldName);
+                field.setText(String(value));
+                console.log(`Set field "${fieldName}" to: ${String(value).substring(0, 50)}...`); // Log success
+            } catch (e) {
+                // This warning is crucial for debugging!
+                console.warn(`Could not find or set text field: "${fieldName}" - ${e.message}`);
             }
-            body {
-              font-family: Arial, sans-serif;
-              margin: 0;
-              padding: 0;
-              font-size: 12px;
-            }
-            .header {
-              text-align: center;
-              margin-bottom: 20px;
-              position: relative;
-            }
-            .header-left {
-              position: absolute;
-              left: 0;
-              top: 0;
-            }
-            .header-right {
-              position: absolute;
-              right: 0;
-              top: 0;
-              text-align: right;
-              font-size: 10px;
-            }
-            .form-title {
-              text-align: center;
-              font-size: 16px;
-              font-weight: bold;
-              margin: 10px 0;
-            }
-            .part-title {
-              text-align: left;
-              font-size: 14px;
-              font-weight: bold;
-              margin: 10px 0;
-              padding: 5px;
-              background-color: #f0f0f0;
-            }
-            .form-section {
-              margin-bottom: 15px;
-              border: 1px solid #000;
-            }
-            .form-row {
-              display: flex;
-              border-bottom: 1px solid #000;
-            }
-            .form-row:last-child {
-              border-bottom: none;
-            }
-            .form-cell {
-              padding: 5px;
-              border-right: 1px solid #000;
-            }
-            .form-cell:last-child {
-              border-right: none;
-            }
-            .field-number {
-              font-weight: bold;
-              margin-right: 5px;
-            }
-            .field-label {
-              display: block;
-              font-size: 11px;
-            }
-            .field-value {
-              margin-top: 5px;
-              font-weight: normal;
-            }
-            .checkbox-container {
-              display: flex;
-              align-items: center;
-              margin-top: 5px;
-            }
-            .checkbox {
-              width: 12px;
-              height: 12px;
-              border: 1px solid #000;
-              display: inline-block;
-              margin-right: 5px;
-              position: relative;
-            }
-            .checkbox.checked::after {
-              content: "✓";
-              position: absolute;
-              left: 1px;
-              top: -1px;
-              font-size: 10px;
-            }
-            .checkbox-label {
-              margin-right: 15px;
-            }
-            .footnote {
-              font-size: 10px;
-              font-style: italic;
-            }
-            .signature-container {
-              margin-top: 20px;
-              padding: 10px;
-              border: 1px solid #000;
-            }
-            .signature-row {
-              display: flex;
-              margin-bottom: 10px;
-            }
-            .signature-field {
-              flex: 1;
-              border-bottom: 1px solid #000;
-              margin-right: 10px;
-              padding-bottom: 5px;
-            }
-            .signature-label {
-              font-size: 11px;
-              margin-top: 5px;
-            }
-            .signature-image {
-              width: 200px;
-              height: 60px;
-              border-bottom: 1px solid #000;
-            }
-            .page-number {
-              text-align: right;
-              font-size: 10px;
-              margin-top: 20px;
-            }
-            .full-width {
-              width: 100%;
-            }
-            .half-width {
-              width: 50%;
-            }
-            .third-width {
-              width: 33.33%;
-            }
-            .two-thirds-width {
-              width: 66.66%;
-            }
-            .quarter-width {
-              width: 25%;
-            }
-            .column-1 {
-              width: 40%;
-            }
-            .column-2 {
-              width: 30%;
-            }
-            .column-3 {
-              width: 30%;
-            }
-            .note {
-              font-style: italic;
-              font-size: 10px;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <div class="header-left">
-              <img src="https://www.state.gov/wp-content/uploads/2018/11/DOS-Great-Seal-500x500.jpg" width="50" height="50" alt="U.S. Department of State Seal" />
-            </div>
-            <div style="padding-top: 10px;">
-              <div class="form-title">U.S. Department of State</div>
-              <div class="form-title">REPATRIATION / EMERGENCY MEDICAL AND DIETARY ASSISTANCE LOAN APPLICATION</div>
-            </div>
-            <div class="header-right">
-              <div>OMB Approval Number: 1405-0150</div>
-              <div>Expiration Date: 06-30-2027</div>
-              <div>Estimated Burden: 20 Minutes</div>
-            </div>
-          </div>
-
-          <div class="part-title">PART 1 - APPLICATION TO BE COMPLETED BY EACH ADULT APPLICANT REGARDLESS OF NATIONALITY</div>
-
-          <!-- First Row - Name Information -->
-          <div class="form-section">
-            <div class="form-row">
-              <div class="form-cell column-1">
-                <span class="field-number">1.</span>
-                <span class="field-label">Last Name (Print Clearly)</span>
-                <div class="field-value">${scanData.surname || ''}</div>
-              </div>
-              <div class="form-cell column-2">
-                <span class="field-number">2.</span>
-                <span class="field-label">First Name</span>
-                <div class="field-value">${scanData.firstName || ''}</div>
-              </div>
-              <div class="form-cell column-3">
-                <span class="field-number">3.</span>
-                <span class="field-label">Middle Name</span>
-                <div class="field-value">${scanData.middleName || ''}</div>
-              </div>
-            </div>
-
-            <!-- Second Row - Personal Information -->
-            <div class="form-row">
-              <div class="form-cell quarter-width">
-                <span class="field-number">4.</span>
-                <span class="field-label">Social Security Number</span>
-                <div class="field-value">${scanData.ssn || ''}</div>
-              </div>
-              <div class="form-cell quarter-width">
-                <span class="field-number">5.</span>
-                <span class="field-label">Date of Birth (mm-dd-yyyy)</span>
-                <div class="field-value">${formattedBirthDate}</div>
-              </div>
-              <div class="form-cell quarter-width">
-                <span class="field-number">6.</span>
-                <span class="field-label">Place of Birth</span>
-                <div class="field-value">${formattedPlaceOfBirth}</div>
-              </div>
-              <div class="form-cell quarter-width">
-                <span class="field-number">7.</span>
-                <span class="field-label">Identity Document Issuing</span>
-                <div class="checkbox-container">
-                  <div class="checkbox ${isPassport ? 'checked' : ''}"></div>
-                  <span class="checkbox-label">Passport No.</span>
-                </div>
-                <div class="field-value">${scanData.documentNumber || ''}</div>
-                <div class="checkbox-container">
-                  <div class="checkbox ${!isPassport ? 'checked' : ''}"></div>
-                  <span class="checkbox-label">National ID No.</span>
-                </div>
-              </div>
-              <div class="form-cell" style="width: 100px;">
-                <span class="field-number">8.</span>
-                <span class="field-label">Sex</span>
-                <div class="checkbox-container">
-                  <div class="checkbox ${maleChecked}"></div>
-                  <span class="checkbox-label">Male</span>
-                </div>
-                <div class="checkbox-container">
-                  <div class="checkbox ${femaleChecked}"></div>
-                  <span class="checkbox-label">Female</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Current Lodging Section -->
-          <div class="form-section">
-            <div class="form-row">
-              <div class="form-cell full-width">
-                <span class="field-number">9.</span>
-                <span class="field-label">Current lodging where you may be contacted now.</span>
-                <div class="field-value">${scanData.currentLodging || ''}</div>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell half-width">
-                <span class="field-number">10.</span>
-                <span class="field-label">Phone number where you may be contacted now.</span>
-                <div class="field-value">${scanData.phoneNumber || ''}</div>
-              </div>
-              <div class="form-cell half-width">
-                <span class="field-number">11.</span>
-                <span class="field-label">E-mail address where you may be contacted now.</span>
-                <div class="field-value">${scanData.email || ''}</div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Medical Condition Section -->
-          <div class="form-section">
-            <div class="form-row">
-              <div class="form-cell full-width">
-                <span class="field-number">12.</span>
-                <span class="field-label">Medical condition, current injuries, or limited mobility relevant to evacuation.</span>
-                <div class="field-value">${scanData.medicalConditions || ''}</div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Billing Address Section -->
-          <div class="form-section">
-            <div class="form-row">
-              <div class="form-cell full-width">
-                <span class="field-number">13.</span>
-                <span class="field-label">Verifiable Billing Address at Final Destination in United States or other Permanent Address (Not a Post Office Box)</span>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell full-width">
-                <span class="field-number">14.</span>
-                <span class="field-label">Address Line 1</span>
-                <div class="field-value">${scanData.billingAddress1 || ''}</div>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell full-width">
-                <span class="field-number">15.</span>
-                <span class="field-label">Address Line 2</span>
-                <div class="field-value">${scanData.billingAddress2 || ''}</div>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell half-width">
-                <span class="field-number">16.</span>
-                <span class="field-label">City</span>
-                <div class="field-value">${scanData.billingCity || ''}</div>
-              </div>
-              <div class="form-cell half-width">
-                <span class="field-number">17.</span>
-                <span class="field-label">State/Province</span>
-                <div class="field-value">${scanData.billingState || ''}</div>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell full-width">
-                <span class="field-number">18.</span>
-                <span class="field-label">Country</span>
-                <div class="field-value">${scanData.billingCountry || ''}</div>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell half-width">
-                <span class="field-number">19.</span>
-                <span class="field-label">Postal Code</span>
-                <div class="field-value">${scanData.billingPostalCode || ''}</div>
-              </div>
-              <div class="form-cell half-width">
-                <span class="field-number">20.</span>
-                <span class="field-label">Telephone Number (Include Country/City Codes)</span>
-                <div class="field-value">${scanData.billingPhone || ''}</div>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell full-width">
-                <span class="field-number">21.</span>
-                <span class="field-label">E-mail Address</span>
-                <div class="field-value">${scanData.billingEmail || ''}</div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Emergency Contact Section -->
-          <div class="form-section">
-            <div class="form-row">
-              <div class="form-cell full-width">
-                <span class="field-number">22.</span>
-                <span class="field-label">Emergency Contact (Do not list someone traveling with you)</span>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell half-width">
-                <span class="field-number">23.</span>
-                <span class="field-label">Last Name (Print Clearly)</span>
-                <div class="field-value">${scanData.emergencyLastName || ''}</div>
-              </div>
-              <div class="form-cell half-width">
-                <span class="field-number">24.</span>
-                <span class="field-label">First Name</span>
-                <div class="field-value">${scanData.emergencyFirstName || ''}</div>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell full-width">
-                <span class="field-number">25.</span>
-                <span class="field-label">Address Line 1</span>
-                <div class="field-value">${scanData.emergencyAddress1 || ''}</div>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell full-width">
-                <span class="field-number">26.</span>
-                <span class="field-label">Address Line 2</span>
-                <div class="field-value">${scanData.emergencyAddress2 || ''}</div>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell half-width">
-                <span class="field-number">27.</span>
-                <span class="field-label">City</span>
-                <div class="field-value">${scanData.emergencyCity || ''}</div>
-              </div>
-              <div class="form-cell half-width">
-                <span class="field-number">28.</span>
-                <span class="field-label">State/Province</span>
-                <div class="field-value">${scanData.emergencyState || ''}</div>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell full-width">
-                <span class="field-number">29.</span>
-                <span class="field-label">Country</span>
-                <div class="field-value">${scanData.emergencyCountry || ''}</div>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell half-width">
-                <span class="field-number">30.</span>
-                <span class="field-label">Postal Code</span>
-                <div class="field-value">${scanData.emergencyPostalCode || ''}</div>
-              </div>
-              <div class="form-cell half-width">
-                <span class="field-number">31.</span>
-                <span class="field-label">Telephone Number (Include Country/City Codes)</span>
-                <div class="field-value">${scanData.emergencyPhone || ''}</div>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell full-width">
-                <span class="field-number">32.</span>
-                <span class="field-label">E-mail Address</span>
-                <div class="field-value">${scanData.emergencyEmail || ''}</div>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell full-width">
-                <span class="field-number">33.</span>
-                <span class="field-label">Relationship to you</span>
-                <div class="field-value">${scanData.emergencyRelationship || ''}</div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Accompanying Persons Section -->
-          <div class="form-section">
-            <div class="form-row">
-              <div class="form-cell full-width">
-                <span class="field-number">34.</span>
-                <span class="field-label">If including minor children or incapacitated/incompetent adults, please list below.</span>
-                <div class="checkbox-container">
-                  <div class="checkbox"></div>
-                  <span class="checkbox-label">Check here if none.</span>
-                </div>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell full-width">
-                <div class="field-value">${scanData.accompanyingPersons || ''}</div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Additional Travel Information Section (Not in original form but useful) -->
-          <div class="form-section">
-            <div class="form-row">
-              <div class="form-cell full-width">
-                <span class="field-number">Additional Travel Information</span>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell half-width">
-                <span class="field-label">Carrier</span>
-                <div class="field-value">${scanData.carrier || ''}</div>
-              </div>
-              <div class="form-cell half-width">
-                <span class="field-label">Routing</span>
-                <div class="field-value">${scanData.routing || ''}</div>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell half-width">
-                <span class="field-label">Flight Number</span>
-                <div class="field-value">${scanData.flightNumber || ''}</div>
-              </div>
-              <div class="form-cell half-width">
-                <span class="field-label">Date of Flight</span>
-                <div class="field-value">${scanData.dateOfFlight || ''}</div>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-cell half-width">
-                <span class="field-label">Seats</span>
-                <div class="field-value">${scanData.seats || ''}</div>
-              </div>
-              <div class="form-cell half-width">
-                <span class="field-label">Meal Preference</span>
-                <div class="field-value">${scanData.meal || ''}</div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Signature Section -->
-          ${scanData.signature ? `
-          <div class="signature-container">
-            <div class="form-row" style="border: none;">
-              <div class="form-cell full-width" style="border: none;">
-                <span class="field-number">90.</span>
-                <span class="field-label">Signature Block for Applicant</span>
-              </div>
-            </div>
-            <div style="margin-top: 10px; margin-bottom: 20px;">
-              <p>I hereby accept the foregoing terms and conditions of repayment for myself and persons listed.</p>
-            </div>
-            <div class="signature-row">
-              <div class="signature-field" style="flex: 3;">
-                <span class="field-number">91.</span>
-                <span class="field-label">Full Name Printed</span>
-                <div class="field-value">${scanData.surname || ''}, ${scanData.firstName || ''} ${scanData.middleName || ''}</div>
-              </div>
-            </div>
-            <div class="signature-row">
-              <div style="flex: 2;">
-                <span class="field-number">92.</span>
-                <span class="field-label">Signature (Inked, Typed*)</span>
-                <div>
-                  <img src="${scanData.signature}" style="max-width: 200px; max-height: 60px;" />
-                </div>
-              </div>
-              <div style="flex: 1;">
-                <span class="field-number">93.</span>
-                <span class="field-label">Date (mm-dd-yyyy)</span>
-                <div class="field-value">${new Date().toLocaleDateString('en-US', {month: '2-digit', day: '2-digit', year: 'numeric'})}</div>
-              </div>
-            </div>
-            <div style="margin-top: 10px; font-style: italic; font-size: 10px;">
-              * Retyping your name in this box using a digital device is as acceptable as signing with pen and paper.
-            </div>
-          </div>
-          ` : ''}
-
-          <div class="page-number">DS-3072<br/>04-2024<br/>Page 1 of 3</div>
-        </body>
-      </html>
-    `;
-
-    // Generate the PDF file
-    const { uri } = await Print.printToFileAsync({
-      html: htmlContent,
-      base64: false
+        }
     });
 
-    // Check if sharing is available
-    const isSharingAvailable = await Sharing.isAvailableAsync();
-
-    if (isSharingAvailable) {
-      // Share the PDF file
-      await Sharing.shareAsync(uri, {
-        mimeType: 'application/pdf',
-        dialogTitle: 'Share Repatriation Form',
-        UTI: 'com.adobe.pdf' // iOS only
-      });
+    // Handle Sex (Item 8?) Checkboxes
+    try {
+        if (scanData.sex === 'M') {
+            form.getCheckBox('M').check(); // Use 'M' from 43 0 obj
+            console.log('Checked "M" checkbox.');
+        } else if (scanData.sex === 'F') {
+            form.getCheckBox('F').check(); // Use 'F' from 48 0 obj
+            console.log('Checked "F" checkbox.');
+        }
+    } catch (e) {
+        console.warn(`Could not set Sex checkbox: ${e.message}`);
+        // Note: Radio button groups were not clearly identified in the provided objects
     }
 
-    return uri;
+    // Handle Document Type (Item 7) Checkboxes
+    try {
+      const docType = scanData.documentType?.trim() || ''; // Ensure it's a string and trimmed
+      console.log(`Evaluating Document Type for checkbox: "${docType}"`); // Log the value
+
+      if (docType === 'P' || docType === 'P<') { // Check for 'P' or 'P<'
+        form.getCheckBox('Pass').check(); // Use 'Pass' from 25 0 obj
+        console.log('Checked "Pass" checkbox.');
+      } else {
+        form.getCheckBox('ID').check(); // Use 'ID' from 31 0 obj
+        console.log('Checked "ID" checkbox.');
+      }
+    } catch (e) {
+      console.warn(`Could not set Document Type checkbox: ${e.message} - Field names 'Pass' or 'ID' might be incorrect for this template.`);
+      // Note: Radio button groups were not clearly identified
+    }
+
+    // Handle Accompanying Persons None Checkbox (Item 34)
+    try {
+        if (!scanData.accompanyingPersons || scanData.accompanyingPersons.trim() === '') {
+            form.getCheckBox('Checkbox11').check(); // Use 'Checkbox11' from 114 0 obj
+            console.log('Checked "None" checkbox for accompanying persons.');
+        }
+    } catch(e) {
+        console.warn(`Could not set "None" checkbox (Checkbox11): ${e.message}`);
+    }
+
+    // --- 3. Embed Signature ---
+    // WARNING: No explicit signature field was identified in the provided Page 1 objects.
+    // Using the placeholder name 'Signature'. Verify this field name exists in your PDF template.
+    const signatureFieldName = 'Signature';
+    if (scanData.signature) {
+      console.log('Signature found, attempting to embed into field:', signatureFieldName);
+      try {
+        if (scanData.signature.startsWith('data:image/png;base64,')) {
+          const base64Data = scanData.signature.split(',')[1];
+          // Ensure Buffer polyfill if needed (see comment at end of file)
+          const pngBytes = Buffer.from(base64Data, 'base64');
+          const pngImage = await pdfDoc.embedPng(pngBytes);
+
+          // Attempt to get the field as a button (common for image signatures)
+          const sigField = form.getButton(signatureFieldName);
+          sigField.setImage(pngImage);
+          console.log('Signature embedded successfully into button field:', signatureFieldName);
+        } else {
+           console.warn('Signature format is not a PNG data URI.');
+        }
+      } catch (e) {
+        console.error(`Failed to embed signature into field "${signatureFieldName}": ${e.message}. Does this field exist and is it a Button field?`);
+        // Add fallback text? (Requires a text field for fallback)
+        // try {
+        //     form.getTextField('Signature_Fallback_Text').setText('Signature provided but could not be embedded.');
+        // } catch (fallbackError) {}
+      }
+    } else {
+       console.log('No signature provided.');
+    }
+
+    // --- 4. Flatten form fields (Optional) ---
+    // form.flatten(); // Uncomment this to make fields non-editable after filling
+
+    // --- 5. Save the Modified Document ---
+    console.log('Saving modified PDF...');
+    // Save as Base64 string for FileSystem
+    const pdfBytesBase64 = await pdfDoc.saveAsBase64({ dataUri: false });
+    console.log('PDF saved to Base64.');
+
+    // --- 6. Write PDF to File ---
+    const timestamp = new Date().toISOString().replace(/[:.-]/g, '');
+    const filename = `DS-3072_${scanData.surname || 'Scan'}_${timestamp}.pdf`;
+    const filePath = `${FileSystem.documentDirectory}${filename}`;
+    
+    console.log(`Writing PDF to: ${filePath}`);
+    await FileSystem.writeAsStringAsync(filePath, pdfBytesBase64, {
+      encoding: FileSystem.EncodingType.Base64
+    });
+    console.log('PDF written to file system.');
+
+    // --- 7. Share the PDF ---
+    const isSharingAvailable = await Sharing.isAvailableAsync();
+    if (isSharingAvailable) {
+      console.log('Sharing PDF...');
+      await Sharing.shareAsync(filePath, {
+        mimeType: 'application/pdf',
+        dialogTitle: 'Share Completed DS-3072 Form',
+        UTI: 'com.adobe.pdf' // iOS specific UTI
+      });
+      console.log('PDF shared.');
+    } else {
+       console.log('Sharing is not available on this platform.');
+       // Optionally alert the user the file was saved locally
+       alert(`PDF saved locally at: ${filePath}`);
+    }
+
+    return filePath; // Return the path to the saved file
+
   } catch (error) {
     console.error('Error generating PDF:', error);
-    throw error;
+    // Provide more specific error feedback if possible
+    alert(`Failed to generate PDF: ${error.message}`); 
+    throw error; // Re-throw the error for further handling if needed
   }
 };
 
-export default generateFormPDF;
+// Export the function with the original name expected by App.jsx
+export default fillPdfForm;
+
+// Add Buffer polyfill if running in an environment where it's not standard (like some RN setups)
+// npm install buffer --save
+// import { Buffer } from 'buffer';
+// global.Buffer = Buffer; // Make Buffer globally available if needed

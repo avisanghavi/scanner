@@ -64,7 +64,7 @@ const htmlContent = String.raw`<!DOCTYPE html>
       
       async function initScanner() {
         try {
-          updateStatus("Initializing...");
+        updateStatus("Initializing...");
           
           // Initialize Dynamsoft License
           Dynamsoft.DLR.LabelRecognizer.license = 'DLS2eyJoYW5kc2hha2VDb2RlIjoiMTAzOTUxMDE2LVRYbFFjbTlxIiwibWFpblNlcnZlclVSTCI6Imh0dHBzOi8vbWRscy5keW5hbXNvZnRvbmxpbmUuY29tIiwib3JnYW5pemF0aW9uSUQiOiIxMDM5NTEwMTYiLCJzdGFuZGJ5U2VydmVyVVJMIjoiaHR0cHM6Ly9zZGxzLmR5bmFtc29mdG9ubGluZS5jb20iLCJjaGVja0NvZGUiOi0yMjc3NDQzODN9';
@@ -152,8 +152,8 @@ const htmlContent = String.raw`<!DOCTYPE html>
                   type: 'error',
                   error: error.message
                 }));
-              }
-            }
+        }
+      }
           };
           
           // Start scanning
@@ -318,7 +318,7 @@ const MRZScanner = ({ onScan, onClose }) => {
     
     try {
       if (message === "close") {
-        onClose();
+      onClose();
         return;
       }
 
@@ -362,7 +362,7 @@ const MRZScanner = ({ onScan, onClose }) => {
         <ActivityIndicator size="large" color="#007AFF" />
       </View>
     );
-  }
+    }
 
   if (hasPermission === false) {
     return (

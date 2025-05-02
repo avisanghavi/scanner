@@ -22,6 +22,7 @@ import { useDatabase } from './src/hooks/useDatabase';
 import { testSQLite } from './src/utils/dbTest';
 import { getEventWithScans, updateEvent, deleteAllData, insertScan, migrateDatabase } from './src/utils/db';
 import generateFormPDF from './src/utils/pdfGenerator';
+import MRZRecognizer from './MRZRecognizer.js';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const isTablet = SCREEN_WIDTH >= 768; // iPad mini width is 768pt
@@ -40,7 +41,7 @@ const parseMRZ = (mrzText) => {
     // Clean the text and split into lines
     const lines = mrzText.split('\n').map(line => line.trim());
     console.log('Cleaned lines:', lines);
-    
+
     if (lines.length < 2) {
       console.error('Not enough lines in MRZ data');
       return null;
@@ -63,7 +64,9 @@ const parseMRZ = (mrzText) => {
     const documentNumber = line2.substring(0, 9).trim();
     const nationality = line2.substring(10, 13).trim();
     const dateOfBirth = line2.substring(13, 19).trim();
-    const sex = line2.substring(20, 21).trim();
+    const sex = line2.substring(20, 21).trim().toUpperCase() === '1' ? 'F' : 
+                line2.substring(20, 21).trim().toUpperCase() === '2' ? 'M' : 
+                line2.substring(20, 21).trim().toUpperCase();
     const expiryDate = line2.substring(21, 27).trim();
 
     const parsedData = {
@@ -796,7 +799,7 @@ const ScanDetails = ({ scan, onBack }) => {
           style={[styles.pdfButton, isGeneratingPDF && styles.pdfButtonDisabled]}
           onPress={handleGeneratePDF}
           disabled={isGeneratingPDF}
-        >
+                >
           {isGeneratingPDF ? (
             <ActivityIndicator size="small" color="#fff" />
           ) : (
@@ -1015,7 +1018,7 @@ const EventDetails = ({ event, onClose, onNewScan }) => {
             onClose();
             onNewScan(event);
           }}
-        >
+          >
           <Text style={styles.newScanButtonText}>New Scan</Text>
           </TouchableOpacity>
         </View>
@@ -1071,8 +1074,134 @@ const EventDetails = ({ event, onClose, onNewScan }) => {
 };
 
 export default function App() {
-  const [showScanner, setShowScanner] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [scanResult, setScanResult] = useState(null);
   const [showEvents, setShowEvents] = useState(false);
+  const [recentScans, setRecentScans] = useState([]);
+  const SCAN_BUFFER_SIZE = 5;
+  const REQUIRED_MATCHING_SCANS = 3;
+
+  const {
+    events: dbEvents,
+    scans,
+    loading,
+    loadEvents,
+    loadScans,
+    addScan,
+    getEventDetails,
+    createEvent,
+    updateEvent,
+    addEvent
+  } = useDatabase();
+
+  // Helper function to find the most frequent result
+  const findMostFrequentResult = (scans) => {
+    const counts = {};
+    let maxCount = 0;
+    let mostFrequent = null;
+    
+    scans.forEach(scan => {
+      if (!counts[scan.text]) {
+        counts[scan.text] = {
+          count: 0,
+          confidence: 0
+        };
+      }
+      
+      counts[scan.text].count++;
+      counts[scan.text].confidence = Math.max(counts[scan.text].confidence, scan.confidence);
+      
+      if (counts[scan.text].count > maxCount) {
+        maxCount = counts[scan.text].count;
+        mostFrequent = {
+          text: scan.text,
+          count: counts[scan.text].count,
+          confidence: counts[scan.text].confidence
+        };
+      }
+    });
+    
+    return mostFrequent;
+  };
+
+  const startScanning = async () => {
+    try {
+      setScanning(true);
+      setScanResult(null);
+      setRecentScans([]);
+      
+      const recognizer = new MRZRecognizer();
+      await recognizer.startScanning();
+      
+      recognizer.onImageRead = async (results) => {
+        if (!scanning) return;
+        
+        if (results.length > 0) {
+          const mrzResult = results[0];
+          
+          if (mrzResult.lineResults && mrzResult.lineResults.length > 0) {
+            const lines = mrzResult.lineResults
+              .map(line => line.text)
+              .filter(text => text && typeof text === 'string')
+              .map(text => text.replace(/\s/g, '').toUpperCase());
+            
+            if (lines.length >= 2) {
+              const newScan = {
+                text: lines.join('\n'),
+                confidence: mrzResult.confidence
+              };
+              
+              setRecentScans(prevScans => {
+                const updatedScans = [...prevScans, newScan].slice(-SCAN_BUFFER_SIZE);
+                
+                // Analyze the recent scans for consensus
+                const mostFrequentResult = findMostFrequentResult(updatedScans);
+                
+                if (mostFrequentResult && mostFrequentResult.count >= REQUIRED_MATCHING_SCANS) {
+                  // We have a consensus, accept this result
+                  setScanning(false);
+                  recognizer.stopScanning();
+                  
+                  // Process the result
+                  const result = {
+                    text: mostFrequentResult.text,
+                    confidence: mostFrequentResult.confidence,
+                    timestamp: new Date().toISOString()
+                  };
+                  
+                  setScanResult(result);
+                  // Update events through the database hook
+                  addScan(result);
+                }
+                
+                return updatedScans;
+              });
+            }
+          }
+        }
+      };
+    } catch (error) {
+      console.error('Error starting scan:', error);
+      setScanning(false);
+    }
+  };
+
+  const stopScanning = async () => {
+    setScanning(false);
+    setRecentScans([]);
+  };
+
+  const clearEvents = () => {
+    // Use the database hook to clear events
+    deleteAllData();
+    loadEvents();
+  };
+
+  const formatTimestamp = (timestamp) => {
+    return new Date(timestamp).toLocaleString();
+  };
+
+  const [showScanner, setShowScanner] = useState(false);
   const [showEventDetails, setShowEventDetails] = useState(false);
   const [showScans, setShowScans] = useState(false);
   const [lastScan, setLastScan] = useState(null);
@@ -1115,19 +1244,6 @@ export default function App() {
     remarks: ''
   });
   const [signature, setSignature] = useState(null);
-
-  const {
-    events,
-    scans,
-    loading,
-    loadEvents,
-    loadScans,
-    addScan,
-    getEventDetails,
-    createEvent,
-    updateEvent,
-    addEvent
-  } = useDatabase();
 
   useEffect(() => {
     // Run database migration when the app loads
@@ -1269,11 +1385,8 @@ export default function App() {
         scans: [] // Start with empty scans array
       };
 
-      console.log('Creating new event:', newEvent);
-
-      // Save the event to the database
+      // Save the event to the database using addEvent from useDatabase hook
       const savedEvent = await addEvent(newEvent);
-      console.log('Event created successfully:', savedEvent);
       
       // If we have a scan, add it to the event
       if (lastScan) {
@@ -1281,7 +1394,7 @@ export default function App() {
         const { travelInfo: _, ...mrzData } = lastScan; // Destructure lastScan, excluding its travelInfo
         const scanToSave = {
           ...mrzData, // Use only the MRZ-related data from lastScan
-          label: scanLabel.trim(),
+          label: scanLabel.trim() || `${mrzData.firstName || ''} ${mrzData.surname || ''} - ${mrzData.documentNumber || 'No ID'}`,
           savedAt: new Date().toISOString(),
           eventId: savedEvent.id, // Set the eventId directly
           
@@ -1346,11 +1459,8 @@ export default function App() {
         };
         
         // Save the scan directly with the event ID
-        const scanId = await insertScan(scanToSave);
-        console.log('Scan saved with ID:', scanId);
+        await insertScan(scanToSave);
 
-        // No need to update the event with the scan - it's already associated via eventId
-        
         // Reset scan states
       setLastScan(null);
         setScanLabel('');
@@ -1392,7 +1502,7 @@ export default function App() {
       }
       
       setShowEvents(false);
-      loadEvents(); // Reload events list
+      await loadEvents(); // Reload events list
       return savedEvent;
     } catch (error) {
       console.error('Error creating event:', error);
@@ -1573,7 +1683,7 @@ export default function App() {
         remarks: ''
       });
       setSignature(null);
-      setShowEvents(false);
+    setShowEvents(false);
       
       Alert.alert('Success', 'Scan saved to event successfully');
       await loadEvents();
@@ -1639,7 +1749,7 @@ export default function App() {
           onClose={() => setShowEvents(false)}
           onSelect={lastScan ? handleSaveToEvent : handleEventClick}
           onCreateNew={handleCreateEvent}
-          events={events}
+          events={dbEvents}
         />
       ) : showEventDetails && selectedEvent ? (
         <EventDetails
@@ -2190,7 +2300,7 @@ export default function App() {
                         </TouchableOpacity>
                       </View>
         </SafeAreaView>
-      ) : (
+                  ) : (
         <SafeAreaView style={styles.container}>
           <ScrollView style={styles.scrollView}>
             <View style={styles.dashboardContainer}>
@@ -2232,8 +2342,8 @@ export default function App() {
                       <Text style={styles.actionTitle}>Clear All Data</Text>
                       <Text style={styles.actionSubtitle}>Delete all events and scans</Text>
                     </TouchableOpacity>
-                  </View>
                 </View>
+              </View>
 
                 <View style={styles.twoColumnLayout}>
                   {/* Recent Activity Section */}
@@ -2250,7 +2360,7 @@ export default function App() {
                     <Text style={styles.sectionTitle}>Quick Stats</Text>
             <View style={styles.statsGrid}>
               <View style={styles.statCard}>
-                        <Text style={styles.statNumber}>{events?.length || 0}</Text>
+                        <Text style={styles.statNumber}>{dbEvents?.length || 0}</Text>
                 <Text style={styles.statLabel}>Events</Text>
               </View>
               
@@ -2282,8 +2392,8 @@ export default function App() {
                     style={styles.eventsScrollView}
                     contentContainerStyle={styles.eventsScrollContent}
                   >
-                    {events && events.length > 0 ? (
-                      events.slice(0, 5).map((event) => (
+                    {dbEvents && dbEvents.length > 0 ? (
+                      dbEvents.slice(0, 5).map((event) => (
                         <TouchableOpacity
                           key={event.id}
                           style={styles.eventCard}
