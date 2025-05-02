@@ -2346,16 +2346,9 @@ export default function App() {
               </View>
 
                 <View style={styles.twoColumnLayout}>
-                  {/* Recent Activity Section */}
-                  <View style={[styles.section, styles.columnSection]}>
-                    <Text style={styles.sectionTitle}>Recent Activity</Text>
-                    <View style={styles.recentActivityCard}>
-                      <Text style={styles.noActivityText}>No recent scans</Text>
-                      <Text style={styles.noActivitySubtext}>Start by scanning a new document</Text>
-              </View>
-          </View>
+                  {/* REMOVED: Recent Activity Section */}
 
-          {/* Quick Stats Section */}
+                  {/* Quick Stats Section */}
                   <View style={[styles.section, styles.columnSection]}>
                     <Text style={styles.sectionTitle}>Quick Stats</Text>
             <View style={styles.statsGrid}>
@@ -2419,6 +2412,7 @@ export default function App() {
                       ))
                     ) : (
                       <View style={styles.noEventsCard}>
+                        <Text style={styles.placeholderIcon}>📅</Text>
                         <Text style={styles.noEventsText}>No events created</Text>
                         <Text style={styles.noEventsSubtext}>Create your first event to get started</Text>
                       </View>
@@ -2447,7 +2441,7 @@ const styles = StyleSheet.create({
   dashboardContainer: {
     flex: 1,
     padding: isTablet ? 40 : 20,
-    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight + (isTablet ? 40 : 20) : (isTablet ? 40 : 20),
+    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight + (isTablet ? 40 : 20) : (isTablet ? 60 : 20), // Increased top padding for iPad
     alignItems: 'center',
   },
   contentWrapper: {
@@ -2455,109 +2449,117 @@ const styles = StyleSheet.create({
     maxWidth: isTablet ? 1024 : '100%',
   },
   headerTitle: {
-    fontSize: isTablet ? 34 : 28,
+    fontSize: isTablet ? 40 : 28, // Increased font size
     fontWeight: '700',
     color: '#1c1c1e',
-    marginBottom: isTablet ? 32 : 24,
+    marginBottom: isTablet ? 40 : 24, // Increased margin
   },
   section: {
-    marginBottom: isTablet ? 32 : 24,
+    marginBottom: isTablet ? 40 : 24, // Increased margin
     width: '100%',
   },
   columnSection: {
     flex: 1,
-    marginHorizontal: isTablet ? 12 : 0,
+    marginHorizontal: isTablet ? 16 : 0, // Increased horizontal margin for columns
   },
   sectionTitle: {
-    fontSize: isTablet ? 24 : 20,
+    fontSize: isTablet ? 26 : 20, // Increased font size
     fontWeight: '600',
     color: '#1c1c1e',
-    marginBottom: isTablet ? 20 : 16,
+    marginBottom: isTablet ? 24 : 16, // Increased margin
   },
   twoColumnLayout: {
     flexDirection: isTablet ? 'row' : 'column',
-    marginHorizontal: isTablet ? -12 : 0,
+    marginHorizontal: isTablet ? -16 : 0, // Adjusted negative margin to match columnSection
   },
   quickActionsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: isTablet ? 16 : 12,
+    gap: isTablet ? 24 : 12, // Increased gap
   },
   actionCard: {
     flex: 1,
-    minWidth: isTablet ? 200 : '30%',
-    padding: isTablet ? 24 : 16,
-    borderRadius: isTablet ? 20 : 16,
+    minWidth: isTablet ? 220 : '45%', // Adjusted minWidth
+    padding: isTablet ? 30 : 16, // Increased padding
+    borderRadius: isTablet ? 24 : 16, // Increased radius
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 4 }, // Slightly increased shadow
     shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
+    shadowRadius: 10, // Slightly increased shadow
+    elevation: 5, // Slightly increased elevation
   },
   actionTitle: {
-    fontSize: isTablet ? 20 : 17,
+    fontSize: isTablet ? 22 : 17, // Increased font size
     fontWeight: '600',
     color: '#fff',
-    marginBottom: 4,
+    marginBottom: 8, // Increased margin
   },
   actionSubtitle: {
-    fontSize: isTablet ? 15 : 13,
-    color: 'rgba(255, 255, 255, 0.8)',
+    fontSize: isTablet ? 16 : 13, // Increased font size
+    color: 'rgba(255, 255, 255, 0.85)', // Slightly less transparent
   },
   recentActivityCard: {
     backgroundColor: '#fff',
-    borderRadius: isTablet ? 20 : 16,
-    padding: isTablet ? 32 : 24,
+    borderRadius: isTablet ? 24 : 16, // Increased radius
+    padding: isTablet ? 40 : 24, // Increased padding
     alignItems: 'center',
-    height: '100%',
+    justifyContent: 'center', // Center content vertically
+    minHeight: isTablet ? 250 : 150, // Ensure minimum height
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 4 }, // Slightly increased shadow
     shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
+    shadowRadius: 10, // Slightly increased shadow
+    elevation: 5, // Slightly increased elevation
+  },
+  placeholderIcon: {
+    fontSize: isTablet ? 60 : 40,
+    marginBottom: 16,
+    opacity: 0.6,
   },
   noActivityText: {
-    fontSize: isTablet ? 20 : 17,
+    fontSize: isTablet ? 22 : 17, // Increased font size
     fontWeight: '600',
     color: '#1c1c1e',
-    marginBottom: 8,
+    marginBottom: 10, // Increased margin
   },
   noActivitySubtext: {
-    fontSize: isTablet ? 17 : 15,
+    fontSize: isTablet ? 18 : 15, // Increased font size
     color: '#666',
+    textAlign: 'center', // Center text
   },
   statsGrid: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    gap: isTablet ? 16 : 12,
+    gap: isTablet ? 24 : 12, // Increased gap
   },
   statCard: {
     flex: 1,
     backgroundColor: '#fff',
-    borderRadius: isTablet ? 20 : 16,
-    padding: isTablet ? 24 : 16,
+    borderRadius: isTablet ? 24 : 16, // Increased radius
+    padding: isTablet ? 30 : 16, // Increased padding
     alignItems: 'center',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 4 }, // Slightly increased shadow
     shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
+    shadowRadius: 10, // Slightly increased shadow
+    elevation: 5, // Slightly increased elevation
   },
   statNumber: {
-    fontSize: isTablet ? 32 : 24,
+    fontSize: isTablet ? 36 : 24, // Increased font size
     fontWeight: '700',
     color: '#1c1c1e',
-    marginBottom: 4,
+    marginBottom: 6, // Increased margin
   },
   statLabel: {
-    fontSize: isTablet ? 15 : 13,
+    fontSize: isTablet ? 16 : 13, // Increased font size
     color: '#666',
   },
   versionText: {
-    fontSize: isTablet ? 15 : 13,
-    color: '#666',
+    fontSize: isTablet ? 16 : 13,
+    color: '#888', // Slightly darker color
     textAlign: 'center',
-    marginTop: isTablet ? 32 : 24,
+    marginTop: isTablet ? 40 : 24, // Increased margin
+    paddingBottom: isTablet ? 20 : 10, // Add padding at the bottom
   },
   header: {
     padding: 20,
@@ -2847,56 +2849,58 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: isTablet ? 20 : 16,
+    marginBottom: isTablet ? 24 : 16, // Increased margin
   },
   viewAllButton: {
-    fontSize: isTablet ? 16 : 14,
+    fontSize: isTablet ? 18 : 14, // Increased font size
     color: '#007AFF',
     fontWeight: '600',
   },
   eventsScrollView: {
-    marginLeft: -20,
-    paddingLeft: 20,
-    marginRight: -20,
-    paddingRight: 20,
+    // Keep negative margins to allow cards to slightly overhang if needed
+    marginLeft: isTablet ? -30 : -20,
+    paddingLeft: isTablet ? 30 : 20,
+    marginRight: isTablet ? -30 : -20,
+    paddingRight: isTablet ? 30 : 20,
   },
   eventsScrollContent: {
-    paddingVertical: 8,
+    paddingVertical: 12, // Add some vertical padding
+    gap: isTablet ? 24 : 16, // Use gap for spacing between cards
   },
   eventCard: {
     backgroundColor: '#fff',
-    borderRadius: isTablet ? 20 : 16,
-    padding: isTablet ? 24 : 20,
-    marginRight: 16,
-    width: isTablet ? 320 : 280,
+    borderRadius: isTablet ? 24 : 16, // Increased radius
+    padding: isTablet ? 30 : 20, // Increased padding
+    // Remove marginRight, use gap in eventsScrollContent instead
+    width: isTablet ? 360 : 280, // Increased width
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 4 }, // Slightly increased shadow
     shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
+    shadowRadius: 10, // Slightly increased shadow
+    elevation: 5, // Slightly increased elevation
   },
   eventCardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: 8,
+    marginBottom: 12, // Increased margin
   },
   eventCardTitle: {
-    fontSize: isTablet ? 18 : 16,
+    fontSize: isTablet ? 20 : 16, // Increased font size
     fontWeight: '600',
     color: '#1c1c1e',
     flex: 1,
-    marginRight: 8,
+    marginRight: 10, // Increased margin
   },
   eventCardDate: {
-    fontSize: isTablet ? 14 : 12,
+    fontSize: isTablet ? 15 : 12, // Increased font size
     color: '#666',
   },
   eventCardDescription: {
-    fontSize: isTablet ? 15 : 14,
+    fontSize: isTablet ? 16 : 14, // Increased font size
     color: '#666',
-    marginBottom: 12,
-    lineHeight: isTablet ? 22 : 20,
+    marginBottom: 16, // Increased margin
+    lineHeight: isTablet ? 24 : 20, // Increased line height
   },
   eventCardFooter: {
     flexDirection: 'row',
@@ -2904,31 +2908,31 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   eventCardScans: {
-    fontSize: isTablet ? 14 : 13,
+    fontSize: isTablet ? 15 : 13, // Increased font size
     color: '#007AFF',
     fontWeight: '500',
   },
   noEventsCard: {
     backgroundColor: '#fff',
-    borderRadius: isTablet ? 20 : 16,
-    padding: isTablet ? 24 : 20,
-    width: isTablet ? 320 : 280,
+    borderRadius: isTablet ? 24 : 16, // Increased radius
+    padding: isTablet ? 40 : 20, // Increased padding
+    width: isTablet ? 360 : 280, // Increased width
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 4 }, // Slightly increased shadow
     shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
+    shadowRadius: 10, // Slightly increased shadow
+    elevation: 5, // Slightly increased elevation
   },
   noEventsText: {
-    fontSize: isTablet ? 17 : 16,
+    fontSize: isTablet ? 18 : 16, // Increased font size
     fontWeight: '600',
     color: '#1c1c1e',
-    marginBottom: 4,
+    marginBottom: 8, // Increased margin
   },
   noEventsSubtext: {
-    fontSize: isTablet ? 15 : 14,
+    fontSize: isTablet ? 16 : 14, // Increased font size
     color: '#666',
     textAlign: 'center',
   },

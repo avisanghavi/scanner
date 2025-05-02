@@ -69,7 +69,14 @@ const fillPdfForm = async (scanData) => {
     console.log('PDF form obtained.');
 
     // --- 2. Map Scan Data to Form Fields ---
-    // Updated field names based on PDF object inspection
+    // Construct full name, handling potential missing middle name
+    const fullNameParts = [scanData.firstName, scanData.middleName, scanData.surname].filter(Boolean);
+    const fullName = fullNameParts.join(' ');
+
+    // Get current date and format it
+    const currentDate = new Date();
+    const currentDateFormatted = `${String(currentDate.getMonth() + 1).padStart(2, '0')}/${String(currentDate.getDate()).padStart(2, '0')}/${currentDate.getFullYear()}`;
+    
     const placeOfBirth = [
       scanData.birthCity || '',
       scanData.birthState || '',
@@ -84,7 +91,6 @@ const fillPdfForm = async (scanData) => {
       'Edit49': scanData.ssn,                                   // 13 0 obj (Item 4 SSN)
       'DOB': formatDate(scanData.dateOfBirth),                  // 18 0 obj (Item 5 Date of Birth)
       'POB': placeOfBirth,                                      // 22 0 obj (Item 6 Place of Birth - combined)
-      'Edit64': formatDate(scanData.expiryDate),                 // 147 0 obj (Expiration Date)
       'Coun': scanData.issuingCountry,                          // 36 0 obj (Visually Issuing Country)
       'Edit66': scanData.documentNumber,                         // 41 0 obj (Visually Passport No.)
       'Lodg': scanData.currentLodging,                          // 53 0 obj (Item 10a Current Lodging)
@@ -112,27 +118,13 @@ const fillPdfForm = async (scanData) => {
       'rel': scanData.emergencyRelationship,                    // 111 0 obj (Item 33 Emergency Contact Relationship)
       'Edit20': scanData.accompanyingPersons,                   // 212 0 obj (Item 34 Accompanying Persons)
 
-      // Fields from Page 2 (if needed, assuming they exist based on object list structure)
-      // 'Lna': scanData.surname, // 119 0 obj
-      // 'Fir': scanData.firstName, // 122 0 obj
-      // 'Mi': scanData.middleName, // 124 0 obj
-      // 'SSn1': scanData.ssn, // 126 0 obj
-      // 'Date2': formatDate(scanData.dateOfBirth), // 130 0 obj
-      // 'Edit10': placeOfBirth, // 134 0 obj
-      // 'Edit65': scanData.documentNumber, // 149 0 obj
-      // 'Edit69': scanData.issuingCountry, // 151 0 obj
-      // 'Edit11': formatDate(scanData.expiryDate), // 199 0 obj
-      // 'Edit8': scanData.nationality, // 197 0 obj
-      // 'LasN': scanData.surname, // 167 0 obj
-      // 'FirsN': scanData.firstName, // 169 0 obj
-      // 'Mid': scanData.middleName, // 171 0 obj
-      // 'SSNu': scanData.ssn, // 173 0 obj
-      // 'Date1': formatDate(scanData.dateOfBirth), // 178 0 obj
-      // 'POB2': placeOfBirth, // 182 0 obj
-      // 'Edit7': scanData.documentNumber, // 195 0 obj
+      // Page 2 Signature Block Fields (Corrected Names)
+      'AppFullName': fullName, // Box 91 Full Name Printed (Object 148)
+      'AppSign': fullName,     // Box 92 Signature (Typed) (Object 149)
+      'SpouseDate': currentDateFormatted, // Box 93 Date (Object 150)
     };
     
-    console.log('Filling text fields with corrected names...');
+    console.log('Filling text fields including corrected name and date for signature block...');
     Object.entries(fieldMapping).forEach(([fieldName, value]) => {
         if (value !== undefined && value !== null && String(value).trim() !== '') { // Check for non-empty strings
             try {
