@@ -15,14 +15,19 @@ import {
   ActivityIndicator,
   Image,
   Share,
+  Animated,
+  Haptics,
 } from 'react-native';
 import SignatureScreen from 'react-native-signature-canvas';
+import { Feather } from '@expo/vector-icons'; // Import icon library
 import MRZScanner from './MRZScanner';
 import { useDatabase } from './src/hooks/useDatabase';
 import { testSQLite } from './src/utils/dbTest';
 import { getEventWithScans, updateEvent, deleteAllData, insertScan, migrateDatabase } from './src/utils/db';
 import generateFormPDF from './src/utils/pdfGenerator';
 import MRZRecognizer from './MRZRecognizer.js';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const isTablet = SCREEN_WIDTH >= 768; // iPad mini width is 768pt
@@ -91,11 +96,19 @@ const parseMRZ = (mrzText) => {
 };
 
 const formatMRZDate = (dateStr, isExpiryDate = false) => {
-  if (!dateStr || dateStr.length !== 6) return 'Invalid date';
+  if (!dateStr || dateStr.length !== 6) return '';
   
+  try {
   const year = dateStr.substring(0, 2);
   const month = dateStr.substring(2, 4);
   const day = dateStr.substring(4, 6);
+    
+    // Basic validation
+    const monthNum = parseInt(month);
+    const dayNum = parseInt(day);
+    if (monthNum < 1 || monthNum > 12 || dayNum < 1 || dayNum > 31) {
+      return '';
+    }
   
   let fullYear;
   if (isExpiryDate) {
@@ -104,10 +117,11 @@ const formatMRZDate = (dateStr, isExpiryDate = false) => {
     fullYear = parseInt(year) > 20 ? `19${year}` : `20${year}`;
   }
   
-  const date = new Date(`${fullYear}-${month}-${day}`);
-  if (isNaN(date.getTime())) return 'Invalid date';
-  
   return `${day}/${month}/${fullYear}`;
+  } catch (e) {
+    console.log('Date formatting error:', e);
+    return '';
+  }
 };
 
 const SignaturePage = ({ onSave, onCancel }) => {
@@ -649,119 +663,167 @@ const ErrorDisplay = ({ error, rawData }) => (
   </View>
 );
 
-const EventSelector = ({ visible, onClose, onSelect, onCreateNew, events }) => {
+const EventSelector = ({ visible, onClose, onSelectEvent, events, onCreateEvent }) => {
   const [newEventName, setNewEventName] = useState('');
-  const [newEventDescription, setNewEventDescription] = useState('');
-  const [showCreateNew, setShowCreateNew] = useState(false);
-
-  const handleCreateEvent = async () => {
-    if (!newEventName.trim()) {
-      Alert.alert('Error', 'Please enter an event name');
-      return;
-    }
-
-    try {
-      const eventData = {
-        name: newEventName.trim(),
-        description: newEventDescription.trim(),
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      
-      const savedEvent = await onCreateNew(eventData);
+  const [showCreateEvent, setShowCreateEvent] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  
+  // Filter events based on search query
+  const filteredEvents = events.filter(event => 
+    (event.name || event.eventName || '').toLowerCase().includes(searchQuery.toLowerCase())
+  );
+  
+  const handleCreateEvent = () => {
+    if (newEventName.trim()) {
+      onCreateEvent(newEventName.trim());
       setNewEventName('');
-      setNewEventDescription('');
-      setShowCreateNew(false);
-      onSelect(savedEvent);
-    } catch (e) {
-      Alert.alert('Error', 'Failed to create event: ' + e.message);
+      setShowCreateEvent(false);
+      // Don't close the modal after creating an event
     }
   };
 
   return (
     <Modal
-      visible={visible}
-      animationType="slide"
+      animationType="fade"
       transparent={true}
+      visible={visible}
       onRequestClose={onClose}
     >
       <View style={styles.modalOverlay}>
         <View style={styles.modalContent}>
+          <View style={styles.modalHeader}>
           <Text style={styles.modalTitle}>Select Event</Text>
+            <TouchableOpacity style={styles.modalCloseButton} onPress={onClose}>
+              <Feather name="x" size={24} color="#2C3E50" />
+            </TouchableOpacity>
+          </View>
           
-          {!showCreateNew ? (
-            <>
-              <ScrollView style={styles.eventList}>
-                {events.map(event => (
-                  <TouchableOpacity
-                    key={event.id}
-                    style={styles.eventItem}
-                    onPress={() => onSelect(event)}
-                  >
-                    <Text style={styles.eventName}>{event.name}</Text>
-                    <Text style={styles.eventDescription} numberOfLines={2}>
-                      {event.description}
-                    </Text>
-                    <Text style={styles.eventDate}>
-                      Created: {new Date(event.createdAt).toLocaleDateString()}
-                    </Text>
-                    <Text style={styles.scanCount}>
-                      Scans: {event.scans?.length || 0}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-
-              <View style={styles.modalButtonContainer}>
-              <TouchableOpacity
-                  style={[styles.modalButton, { backgroundColor: '#007AFF' }]}
-                onPress={() => setShowCreateNew(true)}
-              >
-                  <Text style={styles.modalButtonText}>Create New Event</Text>
-              </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[styles.modalButton, { backgroundColor: '#8E8E93', marginTop: 8 }]}
-                  onPress={onClose}
-                >
-                  <Text style={styles.modalButtonText}>Close</Text>
-                </TouchableOpacity>
-              </View>
-            </>
-          ) : (
-            <View style={styles.createEventForm}>
+          {showCreateEvent ? (
+            <View style={{padding: 16}}>
+              <Text style={{fontSize: 16, fontWeight: '500', marginBottom: 8}}>Event Name</Text>
               <TextInput
-                style={styles.modalInput}
-                placeholder="Event Name"
+                style={{
+                  borderWidth: 1,
+                  borderColor: '#D1D1D6',
+                  borderRadius: 8,
+                  padding: 12,
+                  fontSize: 16,
+                  backgroundColor: '#FFFFFF',
+                  marginBottom: 16
+                }}
+                placeholder="Enter event name"
                 value={newEventName}
                 onChangeText={setNewEventName}
-                placeholderTextColor="#999"
               />
-              <TextInput
-                style={[styles.modalInput, { height: 100 }]}
-                placeholder="Event Description"
-                value={newEventDescription}
-                onChangeText={setNewEventDescription}
-                multiline
-                numberOfLines={4}
-                placeholderTextColor="#999"
-              />
-              <View style={styles.modalButtonContainer}>
-                <TouchableOpacity
-                  style={[styles.modalButton, { backgroundColor: '#34C759' }]}
+              <View style={{flexDirection: 'row', justifyContent: 'flex-end', gap: 12}}>
+                <TouchableOpacity 
+                  style={{
+                    paddingVertical: 10,
+                    paddingHorizontal: 16,
+                    borderRadius: 8,
+                    backgroundColor: '#E0E0E0',
+                    flexDirection: 'row',
+                    alignItems: 'center'
+                  }}
+                  onPress={() => setShowCreateEvent(false)}
+                >
+                  <Feather name="x-circle" size={16} color="#2C3E50" style={{marginRight: 8}} />
+                  <Text style={{color: '#2C3E50', fontWeight: '500'}}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={{
+                    paddingVertical: 10,
+                    paddingHorizontal: 16,
+                    borderRadius: 8,
+                    backgroundColor: '#103E7E',
+                    flexDirection: 'row',
+                    alignItems: 'center'
+                  }}
                   onPress={handleCreateEvent}
                 >
-                  <Text style={styles.modalButtonText}>Create Event</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[styles.modalButton, { backgroundColor: '#FF3B30', marginTop: 8 }]}
-                  onPress={() => setShowCreateNew(false)}
-                >
-                  <Text style={styles.modalButtonText}>Cancel</Text>
+                  <Feather name="check-circle" size={16} color="#FFFFFF" style={{marginRight: 8}} />
+                  <Text style={{color: '#FFFFFF', fontWeight: '500'}}>Create Event</Text>
                 </TouchableOpacity>
               </View>
             </View>
+          ) : (
+            <>
+              {/* Add Search Bar */}
+              <View style={styles.searchContainer}>
+                <View style={styles.searchInputContainer}>
+                  <Feather name="search" size={18} color="#8E8E93" style={{marginRight: 8}} />
+                  <TextInput
+                    style={styles.searchInput}
+                    placeholder="Search events..."
+                    placeholderTextColor="#8E8E93"
+                    value={searchQuery}
+                    onChangeText={setSearchQuery}
+                    clearButtonMode="while-editing"
+                  />
+                  {searchQuery.length > 0 && (
+                    <TouchableOpacity onPress={() => setSearchQuery('')}>
+                      <Feather name="x-circle" size={16} color="#8E8E93" />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+              
+              <ScrollView style={styles.eventList}>
+                {filteredEvents.length > 0 ? (
+                  filteredEvents.map((event, index) => (
+                  <TouchableOpacity
+                      key={index}
+                    style={styles.eventItem}
+                      onPress={() => onSelectEvent(event)}
+                    >
+                      <View style={{width: '100%'}}>
+                        <View style={styles.eventItemHeader}>
+                          <View style={styles.eventItemIcon}>
+                            <Feather name="folder" size={18} color="#103E7E" />
+                          </View>
+                          <Text style={styles.eventName}>{event.name || event.eventName}</Text>
+                          <Text style={{fontSize: 12, color: '#6B7280'}}>{event.scans.length} scans</Text>
+                        </View>
+                        <View style={styles.eventItemBody}>
+                          <Text style={{fontSize: 13, color: '#64748B'}}>
+                            Created: {new Date(event.createdAt).toLocaleDateString()} at {
+                              new Date(event.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
+                            }
+                    </Text>
+                        </View>
+                      </View>
+                  </TouchableOpacity>
+                  ))
+                ) : (
+                  <View style={styles.noResultsContainer}>
+                    <Feather name="search" size={36} color="#D1D1D6" />
+                    <Text style={styles.noResultsText}>No matching events found</Text>
+                    {searchQuery ? (
+                      <Text style={styles.noResultsSubtext}>Try a different search term</Text>
+                    ) : (
+                      <Text style={styles.noResultsSubtext}>Create an event to get started</Text>
+                    )}
+                  </View>
+                )}
+              </ScrollView>
+              <View style={{padding: 16, borderTopWidth: 1, borderTopColor: '#D1D1D6'}}>
+              <TouchableOpacity
+                  style={{
+                    backgroundColor: '#103E7E',
+                    borderRadius: 8,
+                    paddingVertical: 12,
+                    paddingHorizontal: 16,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                  }}
+                  onPress={() => setShowCreateEvent(true)}
+                >
+                  <Feather name="plus-circle" size={18} color="#FFFFFF" style={{marginRight: 8}} />
+                  <Text style={{color: '#FFFFFF', fontWeight: '500', fontSize: 16}}>Create New Event</Text>
+              </TouchableOpacity>
+              </View>
+            </>
           )}
         </View>
       </View>
@@ -771,303 +833,703 @@ const EventSelector = ({ visible, onClose, onSelect, onCreateNew, events }) => {
 
 const ScanDetails = ({ scan, onBack }) => {
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
+  const [showConsentModal, setShowConsentModal] = useState(false);
+  const isTablet = SCREEN_WIDTH >= 768;
 
-  const handleGeneratePDF = async () => {
-    try {
-      setIsGeneratingPDF(true);
-      await generateFormPDF(scan);
-    } catch (error) {
-      console.error('Error generating PDF:', error);
-      Alert.alert('Error', 'Failed to generate PDF: ' + error.message);
-    } finally {
-      setIsGeneratingPDF(false);
-    }
+  // Helper for rendering a row with icon, label, and value
+  const InfoRow = ({ icon, iconColor, label, value }) => (
+    <View style={scanDetailsStyles.infoRow}>
+      <Feather name={icon} size={isTablet ? 22 : 18} color={iconColor} style={scanDetailsStyles.infoIcon} />
+      <Text style={scanDetailsStyles.infoLabel}>{label}</Text>
+      <Text style={scanDetailsStyles.infoValue}>{value || 'N/A'}</Text>
+    </View>
+  );
+
+  // Add a function to handle the Generate PDF button click
+  const handleGeneratePDFClick = () => {
+    setShowConsentModal(true);
   };
 
+  // Add a function to generate the PDF after consent
+  const generatePDFWithConsent = async () => {
+    setShowConsentModal(false);
+    setIsGeneratingPDF(true);
+    try { 
+      await generateFormPDF(scan); 
+    } catch (e) { 
+      Alert.alert('Error', e.message); 
+    }
+    setIsGeneratingPDF(false);
+  };
+
+  // Helper for rendering a section with a grid
+  const InfoSection = ({ title, data }) => (
+    <View style={scanDetailsStyles.sectionCard}>
+      <Text style={scanDetailsStyles.sectionHeader}>{title}</Text>
+      <View style={scanDetailsStyles.grid}>
+        {data.map((item, idx) => (
+          <View key={idx} style={scanDetailsStyles.gridItem}>
+            <InfoRow {...item} />
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+
+  // Prepare data for each section
+  const docInfo = [
+    { icon: 'file-text', iconColor: '#0A84FF', label: 'Document Type', value: scan.documentType },
+    { icon: 'user', iconColor: '#FF9500', label: 'Surname', value: scan.surname },
+    { icon: 'user', iconColor: '#FF9500', label: 'First Name', value: scan.firstName },
+    { icon: 'user', iconColor: '#FF9500', label: 'Middle Name', value: scan.middleName },
+    { icon: 'hash', iconColor: '#34C759', label: 'Passport Number', value: scan.documentNumber },
+    { icon: 'flag', iconColor: '#FF2D55', label: 'Nationality', value: scan.nationality },
+    { icon: 'calendar', iconColor: '#5856D6', label: 'Date of Birth', value: formatMRZDate(scan.dateOfBirth, false) },
+    { icon: 'user', iconColor: '#FF9500', label: 'Sex', value: scan.sex },
+    { icon: 'calendar', iconColor: '#5856D6', label: 'Expiry Date', value: formatMRZDate(scan.expiryDate, true) },
+    { icon: 'globe', iconColor: '#FF2D55', label: 'Issuing Country', value: scan.issuingCountry },
+  ];
+  const travelInfo = [
+    { icon: 'navigation', iconColor: '#0A84FF', label: 'Carrier', value: scan.carrier },
+    { icon: 'map', iconColor: '#34C759', label: 'Routing', value: scan.routing },
+    { icon: 'hash', iconColor: '#FF9500', label: 'Flight Number', value: scan.flightNumber },
+    { icon: 'calendar', iconColor: '#5856D6', label: 'Date of Flight', value: scan.dateOfFlight },
+    { icon: 'pocket', iconColor: '#FF2D55', label: 'Seats', value: scan.seats },
+    { icon: 'coffee', iconColor: '#8E8E93', label: 'Meal', value: scan.meal },
+  ];
+  const personalInfo = [
+    { icon: 'map-pin', iconColor: '#FF9500', label: 'Place of Birth (City)', value: scan.birthCity },
+    { icon: 'map', iconColor: '#34C759', label: 'State/Province', value: scan.birthState },
+    { icon: 'globe', iconColor: '#FF2D55', label: 'Country', value: scan.birthCountry },
+    { icon: 'shield', iconColor: '#5856D6', label: 'Social Security Number', value: scan.ssn },
+  ];
+  const lodgingInfo = [
+    { icon: 'home', iconColor: '#0A84FF', label: 'Current Lodging', value: scan.currentLodging },
+    { icon: 'phone', iconColor: '#34C759', label: 'Phone Number', value: scan.phoneNumber },
+    { icon: 'mail', iconColor: '#FF9500', label: 'Email', value: scan.email },
+  ];
+  // Emergency Contact Section
+  const emergencyInfo = [
+    { icon: 'user', iconColor: '#FF9500', label: 'Last Name', value: scan.emergencyLastName },
+    { icon: 'user', iconColor: '#FF9500', label: 'First Name', value: scan.emergencyFirstName },
+    { icon: 'map-pin', iconColor: '#34C759', label: 'Address Line 1', value: scan.emergencyAddress1 },
+    { icon: 'map-pin', iconColor: '#34C759', label: 'Address Line 2', value: scan.emergencyAddress2 },
+    { icon: 'map', iconColor: '#5856D6', label: 'City', value: scan.emergencyCity },
+    { icon: 'map', iconColor: '#5856D6', label: 'State/Province', value: scan.emergencyState },
+    { icon: 'globe', iconColor: '#FF2D55', label: 'Country', value: scan.emergencyCountry },
+    { icon: 'phone', iconColor: '#34C759', label: 'Phone', value: scan.emergencyPhone },
+    { icon: 'mail', iconColor: '#FF9500', label: 'Email', value: scan.emergencyEmail },
+  ];
+  // Billing Information Section
+  const billingInfo = [
+    { icon: 'map-pin', iconColor: '#34C759', label: 'Address Line 1', value: scan.billingAddress1 },
+    { icon: 'map-pin', iconColor: '#34C759', label: 'Address Line 2', value: scan.billingAddress2 },
+    { icon: 'map', iconColor: '#5856D6', label: 'City', value: scan.billingCity },
+    { icon: 'globe', iconColor: '#FF2D55', label: 'Country', value: scan.billingCountry },
+    { icon: 'hash', iconColor: '#FF9500', label: 'Postal Code', value: scan.billingPostalCode },
+    { icon: 'phone', iconColor: '#34C759', label: 'Phone', value: scan.billingPhone },
+    { icon: 'mail', iconColor: '#FF9500', label: 'Email', value: scan.billingEmail },
+  ];
+  // Medical Condition Section
+  const medicalInfo = [
+    { icon: 'activity', iconColor: '#FF2D55', label: 'Medical Condition, current injuries, or limited mobility relevant to evacuation', value: scan.medicalConditions },
+  ];
+  // Accompanying Persons Section
+  const accompanyingInfo = [
+    { icon: 'users', iconColor: '#007AFF', label: 'Accompanying Persons', value: scan.accompanyingPersons },
+  ];
+
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.reviewHeader}>
-                <TouchableOpacity
-          style={styles.backButton}
-          onPress={onBack}
-        >
-          <Text style={styles.backButtonText}>←</Text>
-          <Text style={styles.backButtonLabel}>Back</Text>
+    <SafeAreaView style={scanDetailsStyles.container}>
+      <View style={scanDetailsStyles.header}>
+        <TouchableOpacity style={scanDetailsStyles.backButton} onPress={onBack}>
+          <Feather name="arrow-left" size={isTablet ? 24 : 20} color="#FFFFFF" />
+          <Text style={scanDetailsStyles.backButtonLabel}>Back</Text>
         </TouchableOpacity>
-        <Text style={styles.reviewTitle}>{scan.label || 'Scan Details'}</Text>
-        <TouchableOpacity
-          style={[styles.pdfButton, isGeneratingPDF && styles.pdfButtonDisabled]}
-          onPress={handleGeneratePDF}
+        <Text style={scanDetailsStyles.title}>{scan.label || 'Scan Details'}</Text>
+                <TouchableOpacity
+          style={[scanDetailsStyles.pdfButton, isGeneratingPDF && scanDetailsStyles.pdfButtonDisabled]}
+          onPress={handleGeneratePDFClick}
           disabled={isGeneratingPDF}
-                >
-          {isGeneratingPDF ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Text style={styles.pdfButtonText}>Generate PDF</Text>
-          )}
+        >
+          {isGeneratingPDF ? 
+            <ActivityIndicator size="small" color="#fff" /> : 
+            <>
+              <Feather name="file-text" size={isTablet ? 18 : 16} color="#FFFFFF" />
+              <Text style={scanDetailsStyles.pdfButtonText}>Generate PDF</Text>
+            </>
+          }
+                </TouchableOpacity>
+      </View>
+      
+      {/* Consent Modal */}
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={showConsentModal}
+        onRequestClose={() => setShowConsentModal(false)}
+      >
+        <View style={scanDetailsStyles.consentModalOverlay}>
+          <View style={scanDetailsStyles.consentModalContent}>
+            <View style={scanDetailsStyles.consentModalHeader}>
+              <Text style={scanDetailsStyles.consentModalTitle}>IMPORTANT NOTICE</Text>
+            </View>
+            <View style={scanDetailsStyles.consentModalBody}>
+              <Feather name="alert-triangle" size={40} color="#942926" style={{alignSelf: 'center', marginBottom: 16}} />
+              <Text style={scanDetailsStyles.consentModalText}>
+                BY GENERATING THE DS-3072 FORM, YOU ARE AGREEING TO PAY BACK EXPENSES INCURRED BY THE US GOVT. TO ENSURE SAFE EVACUATION
+              </Text>
+            </View>
+            <View style={scanDetailsStyles.consentModalFooter}>
+                <TouchableOpacity
+                style={scanDetailsStyles.consentModalButtonCancel}
+                onPress={() => setShowConsentModal(false)}
+              >
+                <Text style={scanDetailsStyles.consentModalButtonCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={scanDetailsStyles.consentModalButtonAgree}
+                onPress={generatePDFWithConsent}
+              >
+                <Text style={scanDetailsStyles.consentModalButtonAgreeText}>I Agree</Text>
                 </TouchableOpacity>
               </View>
-
-      <ScrollView style={styles.reviewScrollView}>
-        <View style={styles.reviewContent}>
-          {/* Document Information Section */}
-          <View style={styles.reviewSection}>
-            <View style={styles.reviewSectionHeader}>
-              <Text style={styles.reviewSectionTitle}>Document Information</Text>
-              {scan.confidence && (
-                <View style={styles.confidenceTag}>
-                  <Text style={styles.confidenceText}>
-                    Confidence: {Math.round(scan.confidence)}%
-                  </Text>
+          </View>
+        </View>
+      </Modal>
+      
+      <ScrollView style={scanDetailsStyles.scrollView}>
+        <View style={scanDetailsStyles.content}>
+          <View style={scanDetailsStyles.confidenceRow}>
+            {scan.confidence && (
+              <View style={scanDetailsStyles.confidenceTag}>
+                <Text style={scanDetailsStyles.confidenceText}>Confidence: {Math.round(scan.confidence)}%</Text>
             </View>
           )}
-            </View>
-
-            <View style={styles.reviewCard}>
-              <ResultRow label="Document Type" value={scan.documentType} />
-              <ResultRow label="Surname" value={scan.surname} />
-              <ResultRow label="First Name" value={scan.firstName} />
-              <ResultRow label="Middle Name" value={scan.middleName} />
-              <ResultRow label="Passport Number" value={scan.documentNumber} />
-              <ResultRow label="Nationality" value={scan.nationality} />
-              <ResultRow label="Date of Birth" value={formatMRZDate(scan.dateOfBirth, false)} />
-              <ResultRow label="Sex" value={scan.sex} />
-              <ResultRow label="Expiry Date" value={formatMRZDate(scan.expiryDate, true)} />
-              <ResultRow label="Issuing Country" value={scan.issuingCountry} />
-            </View>
           </View>
-
-          {/* Travel Information Section */}
-          <View style={styles.reviewSection}>
-            <Text style={styles.reviewSectionTitle}>Travel Information</Text>
-            <View style={styles.reviewCard}>
-              <ResultRow label="Carrier" value={scan.carrier} />
-              <ResultRow label="Routing" value={scan.routing} />
-              <ResultRow label="Flight Number" value={scan.flightNumber} />
-              <ResultRow label="Date of Flight" value={scan.dateOfFlight} />
-              <ResultRow label="Seats" value={scan.seats} />
-              <ResultRow label="Meal" value={scan.meal} />
-            </View>
-          </View>
-
-          {/* Personal Information Section */}
-          <View style={styles.reviewSection}>
-            <Text style={styles.reviewSectionTitle}>Personal Information</Text>
-            <View style={styles.reviewCard}>
-              <ResultRow label="Place of Birth (City)" value={scan.birthCity} />
-              <ResultRow label="State/Province" value={scan.birthState} />
-              <ResultRow label="Country" value={scan.birthCountry} />
-              <ResultRow label="Social Security Number" value={scan.ssn} />
-            </View>
-          </View>
-
-          {/* Current Lodging Section */}
-          <View style={styles.reviewSection}>
-            <Text style={styles.reviewSectionTitle}>Current Lodging</Text>
-            <View style={styles.reviewCard}>
-              <ResultRow label="Current Lodging (where you may be contacted now)" value={scan.currentLodging} />
-              <ResultRow label="Phone Number (where you may be contacted now)" value={scan.phoneNumber} />
-              <ResultRow label="Email Address (where you may be contacted now)" value={scan.email} />
-            </View>
-          </View>
-
-          {/* Medical Condition Section */}
-          <View style={styles.reviewSection}>
-            <Text style={styles.reviewSectionTitle}>Medical Condition</Text>
-            <View style={styles.reviewCard}>
-              <ResultRow 
-                label="Medical Condition, current injuries, or limited mobility relevant to evacuation" 
-                value={scan.medicalConditions} 
-              />
-            </View>
-          </View>
-
-          {/* Billing Address Section */}
-          <View style={styles.reviewSection}>
-            <Text style={styles.reviewSectionTitle}>Billing Address</Text>
-            <View style={styles.reviewCard}>
-              <ResultRow label="Address Line 1" value={scan.billingAddress1} />
-              <ResultRow label="Address Line 2" value={scan.billingAddress2} />
-              <ResultRow label="City" value={scan.billingCity} />
-              <ResultRow label="Country" value={scan.billingCountry} />
-              <ResultRow label="Postal Code" value={scan.billingPostalCode} />
-              <ResultRow label="Phone" value={scan.billingPhone} />
-              <ResultRow label="Email" value={scan.billingEmail} />
-            </View>
-          </View>
-
-          {/* Emergency Contact Section */}
-          <View style={styles.reviewSection}>
-            <Text style={styles.reviewSectionTitle}>Emergency Contact</Text>
-            <Text style={styles.sectionNote}>Do not put someone traveling with you</Text>
-            <View style={styles.reviewCard}>
-              <ResultRow label="Last Name" value={scan.emergencyLastName} />
-              <ResultRow label="First Name" value={scan.emergencyFirstName} />
-              <ResultRow label="Address Line 1" value={scan.emergencyAddress1} />
-              <ResultRow label="Address Line 2" value={scan.emergencyAddress2} />
-              <ResultRow label="City" value={scan.emergencyCity} />
-              <ResultRow label="State/Province" value={scan.emergencyState} />
-              <ResultRow label="Country" value={scan.emergencyCountry} />
-              <ResultRow label="Phone" value={scan.emergencyPhone} />
-              <ResultRow label="Email" value={scan.emergencyEmail} />
-            </View>
-          </View>
-
-          {/* Accompanying Persons Section */}
-          <View style={styles.reviewSection}>
-            <Text style={styles.reviewSectionTitle}>Accompanying Persons</Text>
-            <Text style={styles.sectionNote}>Minor children or incapacitated/incompetent adults traveling with you</Text>
-            <View style={styles.reviewCard}>
-              <ResultRow label="Accompanying Persons" value={scan.accompanyingPersons} />
-            </View>
-          </View>
-
-          {/* Signature Section */}
-          {scan.signature && (
-            <View style={styles.reviewSection}>
-              <Text style={styles.reviewSectionTitle}>Signature</Text>
-              <View style={styles.reviewCard}>
-                <View style={styles.signatureImageContainer}>
-                  <Image
-                    source={{ uri: scan.signature }}
-                    style={styles.savedSignatureImage}
-                    resizeMode="contain"
-                  />
-                </View>
-              </View>
-            </View>
-          )}
-
-          {/* Scan Metadata */}
-          <View style={styles.reviewSection}>
-            <Text style={styles.reviewSectionTitle}>Scan Information</Text>
-            <View style={styles.reviewCard}>
-              <ResultRow 
-                label="Scan Date" 
-                value={new Date(scan.savedAt).toLocaleString()} 
-              />
-              <ResultRow 
-                label="Label" 
-                value={scan.label || 'No Label'} 
-              />
-            </View>
-          </View>
+          <InfoSection title="Document Information" data={docInfo} />
+          <InfoSection title="Travel Information" data={travelInfo} />
+          <InfoSection title="Personal Information" data={personalInfo} />
+          <InfoSection title="Current Lodging" data={lodgingInfo} />
+          <InfoSection title="Emergency Contact" data={emergencyInfo} />
+          <InfoSection title="Billing Information" data={billingInfo} />
+          <InfoSection title="Medical Condition" data={medicalInfo} />
+          <InfoSection title="Accompanying Persons" data={accompanyingInfo} />
         </View>
       </ScrollView>
     </SafeAreaView>
   );
 };
 
-const EventDetails = ({ event, onClose, onNewScan }) => {
+// --- Styles for ScanDetails ---
+const scanDetailsStyles = StyleSheet.create({
+  container: { 
+    flex: 1, 
+    backgroundColor: '#F0F2F5' 
+  },
+  header: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    justifyContent: 'space-between', 
+    padding: 20, 
+    backgroundColor: '#103E7E', // Government blue
+    borderBottomWidth: 4, 
+    borderBottomColor: '#8F9CB3' // Lighter blue-grey border
+  },
+  backButton: { 
+    flexDirection: 'row', 
+    alignItems: 'center' 
+  },
+  backButtonLabel: { 
+    fontSize: isTablet ? 18 : 16, 
+    color: '#FFFFFF', 
+    fontWeight: '500', 
+    marginLeft: 6 
+  },
+  title: { 
+    fontSize: isTablet ? 22 : 18, 
+    fontWeight: '600', 
+    color: '#FFFFFF' 
+  },
+  pdfButton: { 
+    backgroundColor: '#2C3E50', // Darker blue for secondary actions
+    paddingHorizontal: 16, 
+    paddingVertical: 8, 
+    borderRadius: 8, 
+    minWidth: 100, 
+    alignItems: 'center',
+    flexDirection: 'row'
+  },
+  pdfButtonDisabled: { 
+    backgroundColor: '#8E8E93' 
+  },
+  pdfButtonText: { 
+    color: '#fff', 
+    fontSize: 15, 
+    fontWeight: '600',
+    marginLeft: 8
+  },
+  scrollView: { 
+    flex: 1, 
+    backgroundColor: '#F0F2F5' 
+  },
+  content: { 
+    padding: isTablet ? 24 : 16 
+  },
+  confidenceRow: { 
+    flexDirection: 'row', 
+    justifyContent: 'flex-end', 
+    marginBottom: 12 
+  },
+  confidenceTag: { 
+    backgroundColor: '#2C3E50', // Darker blue for tags
+    paddingHorizontal: 14, 
+    paddingVertical: 6, 
+    borderRadius: 4 // Less rounded
+  },
+  confidenceText: { 
+    color: '#fff', 
+    fontSize: isTablet ? 15 : 13, 
+    fontWeight: '600' 
+  },
+  sectionCard: { 
+    backgroundColor: '#fff', 
+    borderRadius: 8, // Less rounded
+    padding: isTablet ? 20 : 14, 
+    marginBottom: isTablet ? 20 : 16, 
+    shadowColor: '#000', 
+    shadowOffset: { width: 0, height: 1 }, 
+    shadowOpacity: 0.08, 
+    shadowRadius: 2, 
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#D1D1D6'
+  },
+  sectionHeader: { 
+    fontSize: isTablet ? 18 : 16, 
+    fontWeight: '600', 
+    color: '#1C2833', 
+    marginBottom: isTablet ? 16 : 12, 
+    borderBottomWidth: 1, 
+    borderBottomColor: '#E5E7EB', 
+    paddingBottom: 6 
+  },
+  grid: { 
+    flexDirection: 'column',
+    flexWrap: 'nowrap'
+  },
+  gridItem: { 
+    width: '100%',
+    paddingRight: 0,
+    marginBottom: 10 
+  },
+  infoRow: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    marginBottom: 8 
+  },
+  infoIcon: { 
+    marginRight: 10,
+    color: '#103E7E' // Government blue
+  },
+  infoLabel: { 
+    flex: 1, 
+    color: '#566573', 
+    fontSize: isTablet ? 15 : 13
+  },
+  infoValue: { 
+    flex: 1.2, 
+    color: '#1C2833', 
+    fontWeight: '600', 
+    fontSize: isTablet ? 15 : 13, 
+    textAlign: 'right' 
+  },
+  consentModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  consentModalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    width: '100%',
+    maxWidth: isTablet ? 500 : 400,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 5,
+    overflow: 'hidden',
+  },
+  consentModalHeader: {
+    backgroundColor: '#103E7E',
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#0C3263',
+  },
+  consentModalTitle: {
+    fontSize: isTablet ? 20 : 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    textAlign: 'center',
+  },
+  consentModalBody: {
+    padding: 20,
+  },
+  consentModalText: {
+    fontSize: isTablet ? 16 : 14,
+    lineHeight: isTablet ? 24 : 22,
+    color: '#1C2833',
+    textAlign: 'center',
+    fontWeight: '600',
+  },
+  consentModalFooter: {
+    flexDirection: 'row',
+    borderTopWidth: 1,
+    borderTopColor: '#D1D1D6',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    justifyContent: 'space-between',
+  },
+  consentModalButtonCancel: {
+    backgroundColor: '#E0E0E0',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    minWidth: 100,
+    alignItems: 'center',
+  },
+  consentModalButtonCancelText: {
+    color: '#2C3E50',
+    fontSize: isTablet ? 16 : 14,
+    fontWeight: '600',
+  },
+  consentModalButtonAgree: {
+    backgroundColor: '#103E7E',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    minWidth: 100,
+    alignItems: 'center',
+  },
+  consentModalButtonAgreeText: {
+    color: '#FFFFFF',
+    fontSize: isTablet ? 16 : 14,
+    fontWeight: '600',
+  },
+});
+
+const EventDetails = ({ event, onBack, onViewScan }) => {
   const [scans, setScans] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedScan, setSelectedScan] = useState(null);
+  const [selectedScans, setSelectedScans] = useState({});
   const [error, setError] = useState(null);
-
+  const [exportLoading, setExportLoading] = useState(false);
+  const [selectAll, setSelectAll] = useState(false);
+  
   useEffect(() => {
-    const loadScans = async () => {
-      try {
-        if (!event || !event.id) {
-          console.error('Invalid event data:', event);
-          setError('Invalid event data');
-          setScans([]);
-          return;
-        }
-
-        const eventWithScans = await getEventWithScans(event.id);
-        if (!eventWithScans) {
-          console.error('Event not found:', event.id);
-          setError('Event not found');
-          setScans([]);
-          return;
-        }
-
-        setScans(eventWithScans.scans || []);
-        setError(null);
-      } catch (error) {
-        console.error('Error loading scans:', error);
-        setError('Failed to load scans');
-        setScans([]);
-      } finally {
-        setLoading(false);
+    if (event && event.scans) {
+      setScans(event.scans);
+      setLoading(false);
+    }
+  }, [event]);
+  
+  useEffect(() => {
+    // Update selectAll checkbox state based on selected scans
+    if (scans.length > 0 && Object.keys(selectedScans).length === scans.length) {
+      setSelectAll(true);
+    } else {
+      setSelectAll(false);
+    }
+  }, [selectedScans, scans]);
+  
+  const toggleScanSelection = (scanId) => {
+    setSelectedScans(prev => {
+      const newSelected = { ...prev };
+      if (newSelected[scanId]) {
+        delete newSelected[scanId];
+      } else {
+        newSelected[scanId] = true;
       }
-    };
+      return newSelected;
+    });
+  };
+  
+  const handleSelectAll = () => {
+    if (selectAll) {
+      // Unselect all
+      setSelectedScans({});
+    } else {
+      // Select all
+      const allSelected = {};
+      scans.forEach(scan => {
+        allSelected[scan.id] = true;
+      });
+      setSelectedScans(allSelected);
+    }
+    setSelectAll(!selectAll);
+  };
+  
+  const exportSelectedScans = async () => {
+    const selectedScanIds = Object.keys(selectedScans);
+    if (selectedScanIds.length === 0) {
+      Alert.alert('Error', 'Please select at least one scan to export');
+      return;
+    }
+    
+    setExportLoading(true);
+    try {
+      const selectedScanData = scans.filter(scan => selectedScans[scan.id]);
+      const csvContent = generateCSV(selectedScanData);
+      
+      const fileDate = new Date().toISOString().replace(/:/g, '-').split('.')[0];
+      const fileName = `${event.eventName || event.name || 'Event'}_export_${fileDate}.csv`;
+      
+      const fileUri = FileSystem.documentDirectory + fileName;
+      await FileSystem.writeAsStringAsync(fileUri, csvContent);
+      
+      try {
+        // Move sharing to a separate try-catch to prevent it from affecting export success status
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'text/csv',
+          dialogTitle: `Export ${selectedScanIds.length} scans from ${event.eventName || event.name || 'Event'}`,
+        });
+        
+        try {
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } catch (hapticErr) {
+          // Ignore haptic errors, they shouldn't affect the success of the export
+          console.log('Haptic feedback not available:', hapticErr);
+        }
+        
+        Alert.alert('Success', `${selectedScanIds.length} scans exported successfully`);
+      } catch (shareErr) {
+        console.warn('Sharing error:', shareErr);
+        // If sharing fails but file was created, still consider it a success
+        Alert.alert('Export Successful', 
+          `CSV file created at: ${fileUri}\n\nSharing not available: ${shareErr.message}`,
+          [{ text: 'OK' }]
+        );
+      }
+    } catch (err) {
+      console.error('Export error:', err);
+      setError('Failed to export scans: ' + err.message);
+      Alert.alert('Export Error', `Failed to create CSV file: ${err.message}`);
+      try {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      } catch (hapticErr) {
+        // Ignore haptic errors
+      }
+    } finally {
+      setExportLoading(false);
+    }
+  };
+  
+  const generateCSV = (scansData) => {
+    // Header row with added flight information
+    let csv = 'Document Type,Document Number,Last Name,First Name,Nationality,DOB,Sex,Expiry Date,Scan Date,Carrier,Routing,Flight Number,Date of Flight,Seats,Meal\n';
+    
+    // Data rows
+    scansData.forEach(scan => {
+      const row = [
+        scan.documentType || 'N/A',
+        scan.documentNumber || 'N/A',
+        scan.surname || scan.lastName || 'N/A',
+        scan.firstName || 'N/A',
+        scan.nationality || 'N/A',
+        formatMRZDate(scan.dateOfBirth, false) || scan.birthDate || 'N/A',
+        scan.sex || 'N/A',
+        formatMRZDate(scan.expiryDate, true) || scan.expiryDate || 'N/A',
+        new Date(scan.createdAt || scan.savedAt).toLocaleDateString() || 'N/A',
+        // Add flight information
+        scan.carrier || 'N/A',
+        scan.routing || 'N/A',
+        scan.flightNumber || 'N/A',
+        scan.dateOfFlight || 'N/A',
+        scan.seats || 'N/A',
+        scan.meal || 'N/A'
+      ];
+      
+      // Handle commas and quotes in the data
+      const escapedRow = row.map(field => {
+        // If field contains comma, quote, or newline, enclose in quotes
+        if (field.includes(',') || field.includes('"') || field.includes('\n')) {
+          // Replace quotes with double quotes
+          return `"${field.replace(/"/g, '""')}"`;
+        }
+        return field;
+      });
+      
+      csv += escapedRow.join(',') + '\n';
+    });
+    
+    return csv;
+  };
 
-    loadScans();
-  }, [event?.id]);
-
-  if (selectedScan) {
-    return <ScanDetails scan={selectedScan} onBack={() => setSelectedScan(null)} />;
+  if (loading) {
+    return (
+      <View style={{flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F0F2F5'}}>
+        <ActivityIndicator size="large" color="#103E7E" />
+      </View>
+    );
   }
-
+  
   return (
-    <View style={styles.eventDetailsContainer}>
-      <View style={styles.eventDetailsHeader}>
-        <Text style={styles.eventDetailsTitle}>{event?.name || 'Event Details'}</Text>
-        <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-          <Text style={styles.closeButtonText}>×</Text>
+    <View style={{flex: 1, backgroundColor: '#F0F2F5'}}>
+      <View style={styles.eventDetailHeader}>
+        <TouchableOpacity onPress={onBack} style={{marginRight: 16}}>
+          <Feather name="arrow-left" size={24} color="#FFFFFF" />
         </TouchableOpacity>
+        <Text style={styles.eventDetailTitle}>{event.eventName}</Text>
+        <Text style={{color: '#FFFFFF', fontSize: 14}}>{scans.length} Scans</Text>
       </View>
       
-      <Text style={styles.eventDescription}>{event?.description || ''}</Text>
-      
-      <View style={styles.eventActionsContainer}>
+      <ScrollView contentContainerStyle={{paddingBottom: 20}}>
+        <View style={styles.eventDetailSection}>
+          <View style={styles.eventDetailSectionHeader}>
+            <Text style={styles.eventDetailSectionTitle}>Scanned Documents</Text>
           <TouchableOpacity
-          style={styles.newScanButton}
-          onPress={() => {
-            onClose();
-            onNewScan(event);
-          }}
-          >
-          <Text style={styles.newScanButtonText}>New Scan</Text>
+              style={{flexDirection: 'row', alignItems: 'center'}} 
+              onPress={handleSelectAll}
+            >
+              <View style={{
+                width: 20, 
+                height: 20, 
+                borderWidth: 2,
+                borderColor: '#103E7E',
+                borderRadius: 4,
+                justifyContent: 'center',
+                alignItems: 'center',
+                backgroundColor: selectAll ? '#103E7E' : 'transparent',
+                marginRight: 8
+              }}>
+                {selectAll && <Feather name="check" size={14} color="#FFFFFF" />}
+              </View>
+              <Text style={{color: '#103E7E', fontWeight: '500'}}>Select All</Text>
           </TouchableOpacity>
         </View>
-
-      <ScrollView style={styles.eventDetailsScroll}>
-        <View style={styles.scansSection}>
-          <Text style={styles.sectionTitle}>Scans ({scans.length})</Text>
           
-          {loading ? (
-            <ActivityIndicator size="large" color="#007AFF" />
-          ) : error ? (
-            <View style={styles.errorContainer}>
-              <Text style={styles.errorText}>{error}</Text>
+          {scans.length === 0 ? (
+            <View style={{padding: 20, alignItems: 'center'}}>
+              <Feather name="file-text" size={40} color="#D1D1D6" />
+              <Text style={{marginTop: 8, color: '#64748B', fontSize: 16, textAlign: 'center'}}>
+                No scans found in this event
+              </Text>
       </View>
-          ) : scans.length === 0 ? (
-            <Text style={styles.noScansText}>No scans saved to this event yet</Text>
           ) : (
-            <View style={styles.scansList}>
-              {scans.map((scan) => (
-                <TouchableOpacity
-                  key={scan.id}
-                  style={styles.scanCard}
-                  onPress={() => setSelectedScan(scan)}
-                >
-                  <View style={styles.scanHeader}>
-                    <Text style={styles.scanTitle}>
-                      {scan.label || `${scan.documentType || 'Document'} - ${scan.surname || ''} ${scan.firstName || ''}`}
-                    </Text>
-                    <Text style={styles.scanDate}>
-                      {new Date(scan.savedAt).toLocaleDateString()}
-                    </Text>
-                  </View>
-                  
-                  <View style={styles.scanDetails}>
-                    <Text>Document: {scan.documentNumber || 'N/A'}</Text>
-                    <Text>Name: {scan.firstName} {scan.surname}</Text>
-                  </View>
-                  
-                  <View style={styles.travelInfo}>
-                    <Text style={styles.travelInfoTitle}>Travel Information</Text>
-                    <Text>Carrier: {scan.carrier || 'N/A'}</Text>
-                    <Text>Flight: {scan.flightNumber || 'N/A'}</Text>
-                    <Text>Date: {scan.dateOfFlight || 'N/A'}</Text>
-                  </View>
-                </TouchableOpacity>
-              ))}
-            </View>
-          )}
+            scans.map((scan, index) => (
+              <View key={index} style={styles.scanCard}>
+                <View style={styles.scanCardHeader}>
+                  <TouchableOpacity 
+                    style={{
+                      width: 22, 
+                      height: 22, 
+                      borderWidth: 2,
+                      borderColor: '#103E7E',
+                      borderRadius: 4,
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      backgroundColor: selectedScans[scan.id] ? '#103E7E' : 'transparent',
+                    }}
+                    onPress={() => toggleScanSelection(scan.id)}
+                  >
+                    {selectedScans[scan.id] && <Feather name="check" size={14} color="#FFFFFF" />}
+                  </TouchableOpacity>
+                  <Text style={styles.scanCardTitle}>
+                    {scan.documentType || 'Document'} - {scan.surname || ''} {scan.firstName || ''}
+                  </Text>
+                  <Text style={styles.scanCardDate}>
+                    {scan.createdAt ? 
+                      new Date(scan.createdAt).toLocaleDateString() : 
+                      scan.savedAt ? 
+                        new Date(scan.savedAt).toLocaleDateString() : 
+                        ''}
+                  </Text>
+                </View>
+                
+                <View style={styles.scanDetailRow}>
+                  <Text style={styles.scanDetailLabel}>Full Name:</Text>
+                  <Text style={styles.scanDetailValue}>
+                    {(scan.surname || scan.lastName) ? 
+                      `${scan.surname || scan.lastName}${(scan.firstName) ? `, ${scan.firstName}` : ''}` : 
+                      'Not available'}
+                  </Text>
+                </View>
+                
+                <View style={styles.scanDetailRow}>
+                  <Text style={styles.scanDetailLabel}>Nationality:</Text>
+                  <Text style={styles.scanDetailValue}>
+                    {scan.nationality || 'Not available'}
+                  </Text>
+                </View>
+                
+                <View style={styles.scanDetailRow}>
+                  <Text style={styles.scanDetailLabel}>Document Info:</Text>
+                  <Text style={styles.scanDetailValue}>
+                    {scan.sex ? `${scan.sex} • ` : ''}
+                    {(scan.birthDate || scan.dateOfBirth) ? 
+                      `DOB: ${scan.birthDate && scan.birthDate.length === 6 ? 
+                          formatMRZDate(scan.birthDate, false) : 
+                          scan.birthDate || 
+                          (scan.dateOfBirth && scan.dateOfBirth.length === 6 ? 
+                            formatMRZDate(scan.dateOfBirth, false) : '')} • ` : 
+                      ''}
+                    {(scan.expiryDate && scan.expiryDate.length === 6) ? 
+                      `Expires: ${formatMRZDate(scan.expiryDate, true)}` : 
+                      (scan.expiryDate) ? 
+                        `Expires: ${scan.expiryDate}` : 
+                        (scan.dateOfExpiry && scan.dateOfExpiry.length === 6) ? 
+                          `Expires: ${formatMRZDate(scan.dateOfExpiry, true)}` : 
+                          ''}
+                    {(!scan.sex && !scan.birthDate && !scan.dateOfBirth && 
+                     !scan.expiryDate && !scan.dateOfExpiry) ? 'Not available' : ''}
+                  </Text>
+                </View>
+
+          <TouchableOpacity
+                  style={{
+                    alignSelf: 'flex-end',
+                    marginTop: 8,
+                    paddingVertical: 6,
+                    paddingHorizontal: 12,
+                    borderRadius: 4,
+                    backgroundColor: '#F0F2F5',
+                    borderWidth: 1,
+                    borderColor: '#D1D1D6'
+                  }}
+                  onPress={() => onViewScan(scan)}
+          >
+                  <Text style={{color: '#103E7E', fontWeight: '500', fontSize: 13}}>
+                    View Details
+                  </Text>
+          </TouchableOpacity>
         </View>
+            ))
+          )}
+      </View>
+        
+        <TouchableOpacity 
+          style={[
+            styles.exportButton, 
+            Object.keys(selectedScans).length === 0 ? styles.exportButtonDisabled : null
+          ]}
+          onPress={exportSelectedScans}
+          disabled={Object.keys(selectedScans).length === 0 || exportLoading}
+        >
+          {exportLoading ? (
+            <ActivityIndicator size="small" color="#FFFFFF" />
+          ) : (
+            <>
+              <Feather name="download" size={18} color="#FFFFFF" />
+              <Text style={styles.exportButtonText}>
+                Export {Object.keys(selectedScans).length > 0 ? Object.keys(selectedScans).length : ''} Selected Scans
+              </Text>
+            </>
+          )}
+        </TouchableOpacity>
       </ScrollView>
     </View>
   );
@@ -1206,6 +1668,7 @@ export default function App() {
   const [showScans, setShowScans] = useState(false);
   const [lastScan, setLastScan] = useState(null);
   const [selectedEvent, setSelectedEvent] = useState(null);
+  const [viewingScan, setViewingScan] = useState(null); // Add this state variable
   const [error, setError] = useState(null);
   const [scanLabel, setScanLabel] = useState('');
   const [expandedScanId, setExpandedScanId] = useState(null);
@@ -1244,8 +1707,19 @@ export default function App() {
     remarks: ''
   });
   const [signature, setSignature] = useState(null);
+  const fadeAnim = useRef(new Animated.Value(0)).current; // Animation value
 
   useEffect(() => {
+    // Fade-in animation for the header
+    Animated.timing(
+      fadeAnim,
+      {
+        toValue: 1,
+        duration: 800, // Adjust duration as needed
+        useNativeDriver: true, // Use native driver for performance
+      }
+    ).start();
+
     // Run database migration when the app loads
     const runMigration = async () => {
       try {
@@ -1260,7 +1734,7 @@ export default function App() {
     runMigration();
     loadEvents();
     loadScans();
-  }, []);
+  }, []); // Empty dependency array ensures this runs only once on mount
 
   useEffect(() => {
     console.log('Travel info updated:', travelInfo);
@@ -1359,7 +1833,7 @@ export default function App() {
         console.log('Scan saved with ID:', scanId);
         
         // Reset states
-        setLastScan(null);
+      setLastScan(null);
         setScanLabel('');
         setTravelInfo({/* ... initial state ... */});
         setSignature(null);
@@ -1374,147 +1848,45 @@ export default function App() {
     }
   };
 
-  const handleCreateEvent = async (eventData) => {
+  const handleCreateEvent = async (eventName) => {
     try {
       // Create a new event with proper fields
       const newEvent = {
-        name: eventData.name,
-        description: eventData.description,
+        name: eventName,
+        description: '',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         scans: [] // Start with empty scans array
       };
 
       // Save the event to the database using addEvent from useDatabase hook
-      const savedEvent = await addEvent(newEvent);
+      await addEvent(newEvent);
       
-      // If we have a scan, add it to the event
+      // Reload events to update the list
+      await loadEvents();
+      
+      // If we have a scan waiting to be saved, continue with that flow
       if (lastScan) {
-        // Fix to properly handle scan data without nesting travelInfo
-        const { travelInfo: _, ...mrzData } = lastScan; // Destructure lastScan, excluding its travelInfo
-        const scanToSave = {
-          ...mrzData, // Use only the MRZ-related data from lastScan
-          label: scanLabel.trim() || `${mrzData.firstName || ''} ${mrzData.surname || ''} - ${mrzData.documentNumber || 'No ID'}`,
-          savedAt: new Date().toISOString(),
-          eventId: savedEvent.id, // Set the eventId directly
-          
-          // Document Information
-          documentType: mrzData.documentType || null,
-          surname: mrzData.surname || null,
-          firstName: mrzData.firstName || null,
-          middleName: mrzData.middleName || null,
-          documentNumber: mrzData.documentNumber || null,
-          nationality: mrzData.nationality || null,
-          dateOfBirth: mrzData.dateOfBirth || null,
-          sex: mrzData.sex || null,
-          expiryDate: mrzData.expiryDate || null,
-          issuingCountry: mrzData.issuingCountry || null,
-          
-          // Travel Information - directly from travelInfo state
-          carrier: travelInfo.carrier || null,
-          routing: travelInfo.routing || null,
-          flightNumber: travelInfo.flightNumber || null,
-          dateOfFlight: travelInfo.dateOfFlight || null,
-          seats: travelInfo.seats || null,
-          meal: travelInfo.meal || null,
-          
-          // Personal Information
-          birthCity: travelInfo.birthCity || null,
-          birthState: travelInfo.birthState || null,
-          birthCountry: travelInfo.birthCountry || null,
-          ssn: travelInfo.ssn || null,
-          
-          // Current Lodging
-          currentLodging: travelInfo.currentLodging || null,
-          phoneNumber: travelInfo.phoneNumber || null,
-          email: travelInfo.email || null,
-          
-          // Medical Condition
-          medicalConditions: travelInfo.medicalConditions || null,
-          
-          // Emergency Contact
-          emergencyLastName: travelInfo.emergencyLastName || null,
-          emergencyFirstName: travelInfo.emergencyFirstName || null,
-          emergencyAddress1: travelInfo.emergencyAddress1 || null,
-          emergencyAddress2: travelInfo.emergencyAddress2 || null,
-          emergencyCity: travelInfo.emergencyCity || null,
-          emergencyState: travelInfo.emergencyState || null,
-          emergencyCountry: travelInfo.emergencyCountry || null,
-          emergencyPhone: travelInfo.emergencyPhone || null,
-          emergencyEmail: travelInfo.emergencyEmail || null,
-          
-          // Billing Information
-          billingAddress1: travelInfo.billingAddress1 || null,
-          billingAddress2: travelInfo.billingAddress2 || null,
-          billingCity: travelInfo.billingCity || null,
-          billingCountry: travelInfo.billingCountry || null,
-          billingPostalCode: travelInfo.billingPostalCode || null,
-          billingPhone: travelInfo.billingPhone || null,
-          billingEmail: travelInfo.billingEmail || null,
-          
-          // Additional Information
-          accompanyingPersons: travelInfo.accompanyingPersons || null,
-          remarks: travelInfo.remarks || null,
-          signature: signature || null
-        };
-        
-        // Save the scan directly with the event ID
-        await insertScan(scanToSave);
-
-        // Reset scan states
-      setLastScan(null);
-        setScanLabel('');
-        setTravelInfo({
-          carrier: '',
-          routing: '',
-          flightNumber: '',
-          dateOfFlight: '',
-          seats: '',
-          meal: '',
-          birthCity: '',
-          birthState: '',
-          birthCountry: '',
-          ssn: '',
-          currentLodging: '',
-          phoneNumber: '',
-          email: '',
-          emergencyLastName: '',
-          emergencyFirstName: '',
-          emergencyAddress1: '',
-          emergencyAddress2: '',
-          emergencyCity: '',
-          emergencyState: '',
-          emergencyCountry: '',
-          emergencyPhone: '',
-          emergencyEmail: '',
-          accompanyingPersons: '',
-          billingAddress1: '',
-          billingAddress2: '',
-          billingCity: '',
-          billingCountry: '',
-          billingPostalCode: '',
-          billingPhone: '',
-          billingEmail: '',
-          medicalConditions: '',
-          remarks: ''
-        });
-        setSignature(null);
-      }
-      
+        // Select the newly created event
+        const createdEvent = dbEvents.find(e => e.name === eventName);
+        if (createdEvent) {
+          handleSaveToEvent(createdEvent);
+          // Now can close the events screen since the scan is saved
       setShowEvents(false);
-      await loadEvents(); // Reload events list
-      return savedEvent;
+        }
+      }
+      // If we're just creating an event, stay on the events screen
+      // No need to close the modal or do anything else
     } catch (error) {
       console.error('Error creating event:', error);
       Alert.alert('Error', 'Failed to create event: ' + error.message);
-      throw error;
     }
   };
 
   const handleEventClick = async (event) => {
     // If no event is provided, just close the modal
     if (!event) {
-      setShowEvents(false);
+    setShowEvents(false);
       return;
     }
 
@@ -1683,10 +2055,10 @@ export default function App() {
         remarks: ''
       });
       setSignature(null);
-    setShowEvents(false);
+      setShowEvents(false); // Close the events modal
       
       Alert.alert('Success', 'Scan saved to event successfully');
-      await loadEvents();
+      await loadEvents(); // Reload events to update the list
     } catch (error) {
       console.error('Error saving to event:', error);
       Alert.alert('Error', 'Failed to save scan to event: ' + error.message);
@@ -1747,22 +2119,29 @@ export default function App() {
         <EventSelector
           visible={true}
           onClose={() => setShowEvents(false)}
-          onSelect={lastScan ? handleSaveToEvent : handleEventClick}
-          onCreateNew={handleCreateEvent}
+          onSelectEvent={lastScan ? handleSaveToEvent : handleEventClick}
           events={dbEvents}
+          onCreateEvent={handleCreateEvent}
         />
       ) : showEventDetails && selectedEvent ? (
         <EventDetails
           event={selectedEvent}
-          onClose={() => {
+          onBack={() => {
             setShowEventDetails(false);
             setSelectedEvent(null);
           }}
-          onNewScan={(event) => {
-            setShowEventDetails(false);
-            setShowScanner(true);
-            setSelectedEvent(event);
+          onViewScan={(scan) => {
+            setViewingScan(scan); // Set the viewingScan state
+            setShowEventDetails(false); // Hide event details
           }}
+        />
+      ) : viewingScan ? ( // 3. Add a condition to render ScanDetails when viewingScan is true
+        <ScanDetails 
+          scan={viewingScan} 
+          onBack={() => {
+            setViewingScan(null); // Clear viewingScan state
+            setShowEventDetails(true); // Show event details screen again
+          }} 
         />
       ) : showScans ? (
         <SafeAreaView style={styles.container}>
@@ -1853,7 +2232,7 @@ export default function App() {
               style={styles.backButton}
               onPress={() => setLastScan(null)}
             >
-              <Text style={styles.backButtonText}>←</Text>
+              <Feather name="arrow-left" size={24} color="#FFFFFF" />
               <Text style={styles.backButtonLabel}>Back</Text>
               </TouchableOpacity>
             <Text style={styles.reviewTitle}>Review Scan</Text>
@@ -1870,7 +2249,7 @@ export default function App() {
                   value={scanLabel}
                   onChangeText={setScanLabel}
                   placeholder="Enter a label for this scan (e.g. Flight AB123 - John Doe)"
-                  placeholderTextColor="#999"
+                  placeholderTextColor="#8E8E93"
                 />
           </View>
 
@@ -1884,398 +2263,487 @@ export default function App() {
                   </Text>
                 </View>
                 </View>
-
-                <View style={styles.reviewCard}>
-                  <ResultRow label="Document Type" value={lastScan.documentType} />
-                  <ResultRow label="Surname" value={lastScan.surname} />
-                  <ResultRow label="First Name" value={lastScan.firstName} />
-                  <ResultRow label="Middle Name" value={lastScan.middleName} />
-                  <ResultRow label="Passport Number" value={lastScan.documentNumber} />
-                  <ResultRow label="Nationality" value={lastScan.nationality} />
-                  <ResultRow label="Date of Birth" value={formatMRZDate(lastScan.dateOfBirth, false)} />
-                  <ResultRow label="Sex" value={lastScan.sex} />
-                  <ResultRow label="Expiry Date" value={formatMRZDate(lastScan.expiryDate, true)} />
-                  <ResultRow label="Issuing Country" value={lastScan.issuingCountry} />
+                <View style={scanDetailsStyles.sectionCard}>
+                  <View style={scanDetailsStyles.grid}>
+                    <View style={scanDetailsStyles.gridItem}>
+                      <View style={scanDetailsStyles.infoRow}>
+                        <Feather name="file-text" size={isTablet ? 22 : 18} color="#0A84FF" style={scanDetailsStyles.infoIcon} />
+                        <Text style={scanDetailsStyles.infoLabel}>Document Type</Text>
+                        <Text style={scanDetailsStyles.infoValue}>{lastScan.documentType || 'N/A'}</Text>
+                      </View>
+                    </View>
+                    <View style={scanDetailsStyles.gridItem}>
+                      <View style={scanDetailsStyles.infoRow}>
+                        <Feather name="user" size={isTablet ? 22 : 18} color="#FF9500" style={scanDetailsStyles.infoIcon} />
+                        <Text style={scanDetailsStyles.infoLabel}>Surname</Text>
+                        <Text style={scanDetailsStyles.infoValue}>{lastScan.surname || 'N/A'}</Text>
+                      </View>
+                    </View>
+                    <View style={scanDetailsStyles.gridItem}>
+                      <View style={scanDetailsStyles.infoRow}>
+                        <Feather name="user" size={isTablet ? 22 : 18} color="#FF9500" style={scanDetailsStyles.infoIcon} />
+                        <Text style={scanDetailsStyles.infoLabel}>First Name</Text>
+                        <Text style={scanDetailsStyles.infoValue}>{lastScan.firstName || 'N/A'}</Text>
+                      </View>
+                    </View>
+                    <View style={scanDetailsStyles.gridItem}>
+                      <View style={scanDetailsStyles.infoRow}>
+                        <Feather name="user" size={isTablet ? 22 : 18} color="#FF9500" style={scanDetailsStyles.infoIcon} />
+                        <Text style={scanDetailsStyles.infoLabel}>Middle Name</Text>
+                        <Text style={scanDetailsStyles.infoValue}>{lastScan.middleName || 'N/A'}</Text>
+                      </View>
+                    </View>
+                    <View style={scanDetailsStyles.gridItem}>
+                      <View style={scanDetailsStyles.infoRow}>
+                        <Feather name="hash" size={isTablet ? 22 : 18} color="#34C759" style={scanDetailsStyles.infoIcon} />
+                        <Text style={scanDetailsStyles.infoLabel}>Passport Number</Text>
+                        <Text style={scanDetailsStyles.infoValue}>{lastScan.documentNumber || 'N/A'}</Text>
+                      </View>
+                    </View>
+                    <View style={scanDetailsStyles.gridItem}>
+                      <View style={scanDetailsStyles.infoRow}>
+                        <Feather name="flag" size={isTablet ? 22 : 18} color="#FF2D55" style={scanDetailsStyles.infoIcon} />
+                        <Text style={scanDetailsStyles.infoLabel}>Nationality</Text>
+                        <Text style={scanDetailsStyles.infoValue}>{lastScan.nationality || 'N/A'}</Text>
+                      </View>
+                    </View>
+                    <View style={scanDetailsStyles.gridItem}>
+                      <View style={scanDetailsStyles.infoRow}>
+                        <Feather name="calendar" size={isTablet ? 22 : 18} color="#5856D6" style={scanDetailsStyles.infoIcon} />
+                        <Text style={scanDetailsStyles.infoLabel}>Date of Birth</Text>
+                        <Text style={scanDetailsStyles.infoValue}>{formatMRZDate(lastScan.dateOfBirth, false)}</Text>
+                      </View>
+                    </View>
+                    <View style={scanDetailsStyles.gridItem}>
+                      <View style={scanDetailsStyles.infoRow}>
+                        <Feather name="user" size={isTablet ? 22 : 18} color="#FF9500" style={scanDetailsStyles.infoIcon} />
+                        <Text style={scanDetailsStyles.infoLabel}>Sex</Text>
+                        <Text style={scanDetailsStyles.infoValue}>{lastScan.sex || 'N/A'}</Text>
+                      </View>
+                    </View>
+                    <View style={scanDetailsStyles.gridItem}>
+                      <View style={scanDetailsStyles.infoRow}>
+                        <Feather name="calendar" size={isTablet ? 22 : 18} color="#5856D6" style={scanDetailsStyles.infoIcon} />
+                        <Text style={scanDetailsStyles.infoLabel}>Expiry Date</Text>
+                        <Text style={scanDetailsStyles.infoValue}>{formatMRZDate(lastScan.expiryDate, true)}</Text>
+                      </View>
+                    </View>
+                    <View style={scanDetailsStyles.gridItem}>
+                      <View style={scanDetailsStyles.infoRow}>
+                        <Feather name="globe" size={isTablet ? 22 : 18} color="#FF2D55" style={scanDetailsStyles.infoIcon} />
+                        <Text style={scanDetailsStyles.infoLabel}>Issuing Country</Text>
+                        <Text style={scanDetailsStyles.infoValue}>{lastScan.issuingCountry || 'N/A'}</Text>
+                      </View>
+                    </View>
+                  </View>
                         </View>
                       </View>
 
               {/* Travel Information Section */}
               <View style={styles.reviewSection}>
                 <Text style={styles.reviewSectionTitle}>Travel Information</Text>
-                <View style={styles.reviewCard}>
+                <View style={styles.travelInfoGrid}>
                   {/* Flight Details */}
                   <Text style={styles.subsectionTitle}>Flight Details</Text>
-                  <View style={styles.travelInfoGrid}>
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Carrier</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.carrier}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, carrier: text })}
-                          placeholder="Enter carrier"
-                        />
-                      </View>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Routing</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.routing}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, routing: text })}
-                          placeholder="Enter routing"
-                        />
-                      </View>
-                      </View>
-
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Flight Number</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.flightNumber}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, flightNumber: text })}
-                          placeholder="Enter flight number"
-                        />
-                      </View>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Date of Flight</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.dateOfFlight}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, dateOfFlight: text })}
-                          placeholder="Enter date of flight"
-                        />
-                      </View>
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Carrier</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.carrier}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, carrier: text })}
+                        placeholder="Enter carrier"
+                        placeholderTextColor="#8E8E93"
+                      />
                     </View>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Routing</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.routing}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, routing: text })}
+                        placeholder="Enter routing"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                  </View>
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Flight Number</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.flightNumber}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, flightNumber: text })}
+                        placeholder="Enter flight number"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Date of Flight</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.dateOfFlight}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, dateOfFlight: text })}
+                        placeholder="Enter date of flight"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                  </View>
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Seats</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.seats}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, seats: text })}
+                        placeholder="Enter seats"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Meal</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.meal}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, meal: text })}
+                        placeholder="Enter meal preference"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                  </View>
+                      </View>
 
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Seats</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.seats}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, seats: text })}
-                          placeholder="Enter seats"
-                        />
-                      </View>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Meal</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.meal}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, meal: text })}
-                          placeholder="Enter meal preference"
-                        />
-                      </View>
+                {/* Personal Information */}
+                <Text style={[styles.subsectionTitle, { marginTop: 20 }]}>Personal Information</Text>
+                <View style={styles.travelInfoGrid}>
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Place of Birth (City)</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.birthCity}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, birthCity: text })}
+                        placeholder="Enter city of birth"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>State/Province</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.birthState}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, birthState: text })}
+                        placeholder="Enter state/province"
+                        placeholderTextColor="#8E8E93"
+                      />
                     </View>
                   </View>
 
-                  {/* Personal Information */}
-                  <Text style={[styles.subsectionTitle, { marginTop: 20 }]}>Personal Information</Text>
-                  <View style={styles.travelInfoGrid}>
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Place of Birth (City)</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.birthCity}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, birthCity: text })}
-                          placeholder="Enter city of birth"
-                        />
-                      </View>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>State/Province</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.birthState}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, birthState: text })}
-                          placeholder="Enter state/province"
-                        />
-                      </View>
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Country</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.birthCountry}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, birthCountry: text })}
+                        placeholder="Enter country of birth"
+                        placeholderTextColor="#8E8E93"
+                      />
                     </View>
-
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Country</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.birthCountry}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, birthCountry: text })}
-                          placeholder="Enter country of birth"
-                        />
-                      </View>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>SSN</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.ssn}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, ssn: text })}
-                          placeholder="Enter SSN"
-                          secureTextEntry
-                        />
-                      </View>
-                    </View>
-
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Current Lodging</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.currentLodging}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, currentLodging: text })}
-                          placeholder="Enter current lodging"
-                        />
-                      </View>
-                    </View>
-
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Phone Number</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.phoneNumber}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, phoneNumber: text })}
-                          placeholder="Enter phone number"
-                          keyboardType="phone-pad"
-                        />
-                      </View>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Email</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.email}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, email: text })}
-                          placeholder="Enter email"
-                          keyboardType="email-address"
-                        />
-                      </View>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>SSN</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.ssn}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, ssn: text })}
+                        placeholder="Enter SSN"
+                        secureTextEntry
+                        placeholderTextColor="#8E8E93"
+                      />
                     </View>
                   </View>
 
-                  {/* Emergency Contact */}
-                  <Text style={[styles.subsectionTitle, { marginTop: 20 }]}>Emergency Contact</Text>
-                  <View style={styles.travelInfoGrid}>
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Last Name</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.emergencyLastName}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyLastName: text })}
-                          placeholder="Enter last name"
-                        />
-                      </View>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>First Name</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.emergencyFirstName}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyFirstName: text })}
-                          placeholder="Enter first name"
-                        />
-                      </View>
-                    </View>
-
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Address Line 1</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.emergencyAddress1}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyAddress1: text })}
-                          placeholder="Enter address line 1"
-                        />
-                      </View>
-                    </View>
-
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Address Line 2</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.emergencyAddress2}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyAddress2: text })}
-                          placeholder="Enter address line 2"
-                        />
-                      </View>
-                    </View>
-
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>City</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.emergencyCity}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyCity: text })}
-                          placeholder="Enter city"
-                        />
-                      </View>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>State/Province</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.emergencyState}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyState: text })}
-                          placeholder="Enter state/province"
-                        />
-                      </View>
-                    </View>
-
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Country</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.emergencyCountry}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyCountry: text })}
-                          placeholder="Enter country"
-                        />
-                      </View>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Phone</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.emergencyPhone}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyPhone: text })}
-                          placeholder="Enter phone number"
-                          keyboardType="phone-pad"
-                        />
-                      </View>
-                    </View>
-
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Email</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.emergencyEmail}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyEmail: text })}
-                          placeholder="Enter email"
-                          keyboardType="email-address"
-                        />
-                      </View>
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Current Lodging</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.currentLodging}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, currentLodging: text })}
+                        placeholder="Enter current lodging"
+                        placeholderTextColor="#8E8E93"
+                      />
                     </View>
                   </View>
 
-                  {/* Additional Information */}
-                  <Text style={[styles.subsectionTitle, { marginTop: 20 }]}>Additional Information</Text>
-                  <View style={styles.travelInfoGrid}>
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Medical Condition, current injuries, or limited mobility relevant to evacuation</Text>
-                        <TextInput
-                          style={[styles.input, { height: 80 }]}
-                          value={travelInfo.medicalConditions}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, medicalConditions: text })}
-                          placeholder="Enter medical conditions, injuries, or mobility limitations"
-                          multiline
-                          numberOfLines={3}
-                        />
-                      </View>
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Phone Number</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.phoneNumber}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, phoneNumber: text })}
+                        placeholder="Enter phone number"
+                        keyboardType="phone-pad"
+                        placeholderTextColor="#8E8E93"
+                      />
                     </View>
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Accompanying Persons (Minor children or incapacitated/incompetent adults traveling with you)</Text>
-                        <TextInput
-                          style={[styles.input, { height: 80 }]}
-                          value={travelInfo.accompanyingPersons}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, accompanyingPersons: text }) }
-                          placeholder="List names and relationships"
-                          multiline
-                          numberOfLines={3}
-                          />
-                      </View>
-                      </View>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Email</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.email}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, email: text })}
+                        placeholder="Enter email"
+                        keyboardType="email-address"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                  </View>
+                </View>
 
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Billing Address 1</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.billingAddress1}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, billingAddress1: text })}
-                          placeholder="Enter billing address line 1"
+                {/* Emergency Contact */}
+                <Text style={[styles.subsectionTitle, { marginTop: 20 }]}>Emergency Contact</Text>
+                <View style={styles.travelInfoGrid}>
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Last Name</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.emergencyLastName}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyLastName: text })}
+                        placeholder="Enter last name"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>First Name</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.emergencyFirstName}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyFirstName: text })}
+                        placeholder="Enter first name"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Address Line 1</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.emergencyAddress1}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyAddress1: text })}
+                        placeholder="Enter address line 1"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Address Line 2</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.emergencyAddress2}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyAddress2: text })}
+                        placeholder="Enter address line 2"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>City</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.emergencyCity}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyCity: text })}
+                        placeholder="Enter city"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>State/Province</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.emergencyState}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyState: text })}
+                        placeholder="Enter state/province"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Country</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.emergencyCountry}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyCountry: text })}
+                        placeholder="Enter country"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Phone</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.emergencyPhone}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyPhone: text })}
+                        placeholder="Enter phone number"
+                        keyboardType="phone-pad"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Email</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.emergencyEmail}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, emergencyEmail: text })}
+                        placeholder="Enter email"
+                        keyboardType="email-address"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                  </View>
+                </View>
+
+                {/* Additional Information */}
+                <Text style={[styles.subsectionTitle, { marginTop: 20 }]}>Additional Information</Text>
+                <View style={styles.travelInfoGrid}>
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Medical Condition, current injuries, or limited mobility relevant to evacuation</Text>
+                      <TextInput
+                        style={[styles.input, { height: 80 }]}
+                        value={travelInfo.medicalConditions}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, medicalConditions: text })}
+                        placeholder="Enter medical conditions, injuries, or mobility limitations"
+                        multiline
+                        numberOfLines={3}
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                  </View>
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Accompanying Persons (Minor children or incapacitated/incompetent adults traveling with you)</Text>
+                      <TextInput
+                        style={[styles.input, { height: 80 }]}
+                        value={travelInfo.accompanyingPersons}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, accompanyingPersons: text }) }
+                        placeholder="List names and relationships"
+                        multiline
+                        numberOfLines={3}
+                        placeholderTextColor="#8E8E93"
                         />
-                      </View>
                     </View>
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Billing Address 2</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.billingAddress2}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, billingAddress2: text })}
-                          placeholder="Enter billing address line 2"
-                        />
-                      </View>
-                    </View>
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Billing City</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={travelInfo.billingCity}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, billingCity: text })}
-                          placeholder="Enter billing city"
-                        />
-                      </View>
-                       <View style={styles.travelInfoField}>
-                         <Text style={styles.fieldLabel}>Billing Postal Code</Text>
-                         <TextInput
-                           style={styles.input}
-                           value={travelInfo.billingPostalCode}
-                           onChangeText={(text) => updateTravelInfo({ ...travelInfo, billingPostalCode: text })}
-                           placeholder="Enter billing postal code"
-                         />
-                       </View>
-                    </View>
-                     <View style={styles.travelInfoRow}>
-                       <View style={styles.travelInfoField}>
-                         <Text style={styles.fieldLabel}>Billing Country</Text>
-                         <TextInput
-                           style={styles.input}
-                           value={travelInfo.billingCountry}
-                           onChangeText={(text) => updateTravelInfo({ ...travelInfo, billingCountry: text })}
-                           placeholder="Enter billing country"
-                         />
-                       </View>
-                    </View>
-                     <View style={styles.travelInfoRow}>
-                       <View style={styles.travelInfoField}>
-                         <Text style={styles.fieldLabel}>Billing Phone</Text>
-                         <TextInput
-                           style={styles.input}
-                           value={travelInfo.billingPhone}
-                           onChangeText={(text) => updateTravelInfo({ ...travelInfo, billingPhone: text })}
-                           placeholder="Enter billing phone"
-                           keyboardType="phone-pad"
-                         />
-                       </View>
-                       <View style={styles.travelInfoField}>
-                         <Text style={styles.fieldLabel}>Billing Email</Text>
-                         <TextInput
-                           style={styles.input}
-                           value={travelInfo.billingEmail}
-                           onChangeText={(text) => updateTravelInfo({ ...travelInfo, billingEmail: text })}
-                           placeholder="Enter billing email"
-                           keyboardType="email-address"
-                         />
-                       </View>
                     </View>
 
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Billing Address 1</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.billingAddress1}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, billingAddress1: text })}
+                        placeholder="Enter billing address line 1"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                  </View>
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Billing Address 2</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.billingAddress2}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, billingAddress2: text })}
+                        placeholder="Enter billing address line 2"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                  </View>
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Billing City</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={travelInfo.billingCity}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, billingCity: text })}
+                        placeholder="Enter billing city"
+                        placeholderTextColor="#8E8E93"
+                      />
+                    </View>
+                     <View style={styles.travelInfoField}>
+                       <Text style={styles.fieldLabel}>Billing Postal Code</Text>
+                       <TextInput
+                         style={styles.input}
+                         value={travelInfo.billingPostalCode}
+                         onChangeText={(text) => updateTravelInfo({ ...travelInfo, billingPostalCode: text })}
+                         placeholder="Enter billing postal code"
+                         placeholderTextColor="#8E8E93"
+                       />
+                     </View>
+                  </View>
+                   <View style={styles.travelInfoRow}>
+                     <View style={styles.travelInfoField}>
+                       <Text style={styles.fieldLabel}>Billing Country</Text>
+                       <TextInput
+                         style={styles.input}
+                         value={travelInfo.billingCountry}
+                         onChangeText={(text) => updateTravelInfo({ ...travelInfo, billingCountry: text })}
+                         placeholder="Enter billing country"
+                         placeholderTextColor="#8E8E93"
+                       />
+                     </View>
+                  </View>
+                   <View style={styles.travelInfoRow}>
+                     <View style={styles.travelInfoField}>
+                       <Text style={styles.fieldLabel}>Billing Phone</Text>
+                       <TextInput
+                         style={styles.input}
+                         value={travelInfo.billingPhone}
+                         onChangeText={(text) => updateTravelInfo({ ...travelInfo, billingPhone: text })}
+                         placeholder="Enter billing phone"
+                         keyboardType="phone-pad"
+                         placeholderTextColor="#8E8E93"
+                       />
+                     </View>
+                     <View style={styles.travelInfoField}>
+                       <Text style={styles.fieldLabel}>Billing Email</Text>
+                       <TextInput
+                         style={styles.input}
+                         value={travelInfo.billingEmail}
+                         onChangeText={(text) => updateTravelInfo({ ...travelInfo, billingEmail: text })}
+                         placeholder="Enter billing email"
+                         keyboardType="email-address"
+                         placeholderTextColor="#8E8E93"
+                       />
+                     </View>
+                  </View>
 
-                    <View style={styles.travelInfoRow}>
-                      <View style={styles.travelInfoField}>
-                        <Text style={styles.fieldLabel}>Remarks</Text>
-                        <TextInput
-                          style={[styles.input, { height: 80 }]}
-                          value={travelInfo.remarks}
-                          onChangeText={(text) => updateTravelInfo({ ...travelInfo, remarks: text })}
-                          placeholder="Enter any additional remarks"
-                          multiline
-                          numberOfLines={3}
-                        />
-                      </View>
+
+                  <View style={styles.travelInfoRow}>
+                    <View style={styles.travelInfoField}>
+                      <Text style={styles.fieldLabel}>Remarks</Text>
+                      <TextInput
+                        style={[styles.input, { height: 80 }]}
+                        value={travelInfo.remarks}
+                        onChangeText={(text) => updateTravelInfo({ ...travelInfo, remarks: text })}
+                        placeholder="Enter any additional remarks"
+                        multiline
+                        numberOfLines={3}
+                        placeholderTextColor="#8E8E93"
+                      />
                     </View>
                   </View>
                 </View>
@@ -2286,143 +2754,185 @@ export default function App() {
                       {/* Action Buttons */}
           <View style={styles.reviewActions}>
                         <TouchableOpacity
-              style={[styles.reviewActionButton, styles.saveButton]}
-              onPress={handleSaveScan}
+                          style={[styles.reviewActionButton, styles.saveButton]}
+                          onPress={handleSaveScan}
                         >
-              <Text style={styles.reviewActionButtonText}>Save Scan</Text>
+                          <Feather name="save" size={18} color="#FFFFFF" style={{marginRight: 8}} />
+                          <Text style={styles.reviewActionButtonText}>Save Scan</Text>
                         </TouchableOpacity>
                         
                         <TouchableOpacity
-              style={[styles.reviewActionButton, styles.eventButton]}
-              onPress={() => setShowEvents(true)}
+                          style={[styles.reviewActionButton, styles.eventButton]}
+                          onPress={() => setShowEvents(true)}
                         >
-              <Text style={styles.reviewActionButtonText}>Save to Event</Text>
+                          <Feather name="folder-plus" size={18} color="#FFFFFF" style={{marginRight: 8}} />
+                          <Text style={styles.reviewActionButtonText}>Save to Event</Text>
                         </TouchableOpacity>
                       </View>
         </SafeAreaView>
                   ) : (
         <SafeAreaView style={styles.container}>
-          <ScrollView style={styles.scrollView}>
+          <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContentContainer}>
             <View style={styles.dashboardContainer}>
-              <View style={styles.contentWrapper}>
-                <Text style={styles.headerTitle}>MRZ Scanner</Text>
-                
-                {/* Quick Actions Section */}
-                <View style={styles.section}>
-                  <Text style={styles.sectionTitle}>Quick Actions</Text>
-                  <View style={styles.quickActionsGrid}>
-                    <TouchableOpacity 
-                      style={[styles.actionCard, { backgroundColor: '#007AFF' }]} 
-                      onPress={() => setShowScanner(true)}
-                    >
+              <View style={styles.governmentHeader}>
+                <View style={styles.headerTitleContainer}>
+                  <View style={styles.headerTitleSeal}>
+                    <Image 
+                      source={require('./assets/us-seal.png')} 
+                      style={styles.sealImage} 
+                    />
+                </View>
+                  <Text style={[styles.headerTitle, {color: '#FFFFFF'}]}>Emergency Response</Text>
+              </View>
+              </View>
+              
+              {/* Quick Actions Section */}
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Quick Actions</Text>
+                <View style={styles.quickActionsGrid}>
+                  <TouchableOpacity 
+                    style={styles.actionCard} 
+                    onPress={() => setShowScanner(true)}
+                  >
+                    <View style={[styles.iconContainer, styles.iconContainerBlue]}>
+                      <Feather name="maximize" size={isTablet ? 22 : 20} color="#FFFFFF" />
+                    </View>
+                    <View style={styles.actionTextContainer}>
                       <Text style={styles.actionTitle}>New Scan</Text>
                       <Text style={styles.actionSubtitle}>Scan a new document</Text>
-                    </TouchableOpacity>
-                    
-                    <TouchableOpacity 
-                      style={[styles.actionCard, { backgroundColor: '#5856D6' }]} 
-                      onPress={() => setShowEvents(true)}
-                    >
+                    </View>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    style={styles.actionCard} 
+                    onPress={() => setShowEvents(true)}
+                  >
+                    <View style={styles.iconContainer}>
+                      <Feather name="calendar" size={isTablet ? 22 : 20} color="#1C2833" />
+                    </View>
+                    <View style={styles.actionTextContainer}>
                       <Text style={styles.actionTitle}>Events</Text>
-                      <Text style={styles.actionSubtitle}>View all events</Text>
-                    </TouchableOpacity>
-                    
-                    <TouchableOpacity 
-                      style={[styles.actionCard, { backgroundColor: '#FF9500' }]} 
-                      onPress={() => setShowScans(true)}
-                    >
+                      <Text style={styles.actionSubtitle}>View and manage events</Text>
+                    </View>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    style={styles.actionCard} 
+                    onPress={() => setShowScans(true)}
+                  >
+                    <View style={styles.iconContainer}>
+                      <Feather name="list" size={isTablet ? 22 : 20} color="#1C2833" />
+                    </View>
+                    <View style={styles.actionTextContainer}>
                       <Text style={styles.actionTitle}>All Scans</Text>
-                      <Text style={styles.actionSubtitle}>View all scans</Text>
-                    </TouchableOpacity>
+                      <Text style={styles.actionSubtitle}>Browse all saved scans</Text>
+                    </View>
+                  </TouchableOpacity>
 
-                    <TouchableOpacity 
-                      style={[styles.actionCard, { backgroundColor: '#FF3B30' }]} 
-                      onPress={handleClearAllData}
-                    >
+                  <TouchableOpacity 
+                    style={styles.actionCard} 
+                    onPress={handleClearAllData}
+                  >
+                    <View style={[styles.iconContainer, styles.iconContainerRed]}>
+                      <Feather name="trash-2" size={isTablet ? 22 : 20} color="#FFFFFF" />
+                    </View>
+                    <View style={styles.actionTextContainer}>
                       <Text style={styles.actionTitle}>Clear All Data</Text>
-                      <Text style={styles.actionSubtitle}>Delete all events and scans</Text>
-                    </TouchableOpacity>
+                      <Text style={styles.actionSubtitle}>Delete all data</Text>
+                    </View>
+                  </TouchableOpacity>
                 </View>
-              </View>
+          </View>
 
-                <View style={styles.twoColumnLayout}>
-                  {/* REMOVED: Recent Activity Section */}
-
-                  {/* Quick Stats Section */}
-                  <View style={[styles.section, styles.columnSection]}>
-                    <Text style={styles.sectionTitle}>Quick Stats</Text>
+          {/* Quick Stats Section */}
+              <View style={[styles.section, { marginBottom: isTablet ? 20 : 16 }]}> 
+                <Text style={styles.sectionTitle}>Overview</Text>
             <View style={styles.statsGrid}>
               <View style={styles.statCard}>
-                        <Text style={styles.statNumber}>{dbEvents?.length || 0}</Text>
-                <Text style={styles.statLabel}>Events</Text>
+                    <Feather name="archive" size={isTablet ? 26 : 22} style={styles.statIcon} />
+                    <Text style={styles.statNumber}>{dbEvents?.length || 0}</Text>
+                    <Text style={styles.statLabel}>Events Created</Text>
               </View>
               
               <View style={styles.statCard}>
-                        <Text style={styles.statNumber}>{scans?.length || 0}</Text>
+                    <Feather name="file-text" size={isTablet ? 26 : 22} style={styles.statIcon} />
+                    <Text style={styles.statNumber}>{scans?.length || 0}</Text>
                 <Text style={styles.statLabel}>Total Scans</Text>
               </View>
               
               <View style={styles.statCard}>
-                        <Text style={styles.statNumber}>{new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</Text>
-                <Text style={styles.statLabel}>Today</Text>
+                    <Feather name="clock" size={isTablet ? 26 : 22} style={styles.statIcon} />
+                    <Text style={styles.statNumber}>{new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</Text>
+                    <Text style={styles.statLabel}>Today's Date</Text>
+                </View>
               </View>
             </View>
-          </View>
-        </View>
-
-                {/* Recent Events Section */}
-                <View style={[styles.section, { marginTop: isTablet ? 32 : 24 }]}>
-                  <View style={styles.sectionHeader}>
-                    <Text style={styles.sectionTitle}>Recent Events</Text>
+              
+              {/* Recent Events Section */}
+              <View style={[styles.section, { marginTop: 0, marginBottom: isTablet ? 20 : 16 }]}>
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>Recent Events</Text>
+                  {dbEvents && dbEvents.length > 5 && (
                     <TouchableOpacity onPress={() => setShowEvents(true)}>
                       <Text style={styles.viewAllButton}>View All</Text>
                     </TouchableOpacity>
-                  </View>
-                  
+                  )}
+          </View>
+                
+                {dbEvents && dbEvents.length > 0 ? (
                   <ScrollView 
                     horizontal={true} 
                     showsHorizontalScrollIndicator={false}
                     style={styles.eventsScrollView}
                     contentContainerStyle={styles.eventsScrollContent}
                   >
-                    {dbEvents && dbEvents.length > 0 ? (
-                      dbEvents.slice(0, 5).map((event) => (
-                        <TouchableOpacity
-                          key={event.id}
-                          style={styles.eventCard}
-                          onPress={() => handleEventClick(event)}
-                        >
-                          <View style={styles.eventCardHeader}>
-                            <Text style={styles.eventCardTitle}>{event.name}</Text>
-                            <Text style={styles.eventCardDate}>
-                              {new Date(event.createdAt).toLocaleDateString()}
-                            </Text>
-                          </View>
-                          
-                          <Text style={styles.eventCardDescription} numberOfLines={2}>
-                            {event.description || 'No description'}
-                          </Text>
-                          
-                          <View style={styles.eventCardFooter}>
-                            <Text style={styles.eventCardScans}>
-                              {event.scans?.length || 0} scans
-                            </Text>
+                    {dbEvents.slice(0, 5).map((event) => (
+                      <TouchableOpacity
+                        key={event.id}
+                        style={styles.eventCard}
+                        onPress={() => handleEventClick(event)}
+                      >
+                        <View style={styles.eventCardHeader}>
+                          <Feather 
+                            name="folder" 
+                            size={isTablet ? 18 : 16} 
+                            style={styles.eventCardIcon}
+                          />
+                          <Text style={styles.eventCardTitle} numberOfLines={1}>{event.name}</Text>
         </View>
-                        </TouchableOpacity>
-                      ))
-                    ) : (
-                      <View style={styles.noEventsCard}>
-                        <Text style={styles.placeholderIcon}>📅</Text>
-                        <Text style={styles.noEventsText}>No events created</Text>
-                        <Text style={styles.noEventsSubtext}>Create your first event to get started</Text>
-                      </View>
-                    )}
+                        
+                        <Text style={styles.eventCardDescription} numberOfLines={2}>
+                          {event.description || 'No description provided'}
+                        </Text>
+                        
+                        <View style={styles.eventCardFooter}>
+                          <Feather 
+                            name="file-text" 
+                            size={isTablet ? 14 : 12} 
+                            style={styles.eventCardFooterIcon}
+                          />
+                          <Text style={styles.eventCardScans}>
+                            {event.scans?.length || 0} scans
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    ))}
                   </ScrollView>
-                </View>
+                ) : (
+                  <View style={styles.noEventsCard}>
+                    <Feather 
+                      name="archive" 
+                      size={isTablet ? 40 : 32}
+                      style={styles.noEventsIcon}
+        />
+                    <Text style={styles.noEventsText}>No events created yet</Text>
+                    <Text style={styles.noEventsSubtext}>Tap 'Events' in Quick Actions to create one.</Text>
+                  </View>
+                )}
+              </View>
 
-                <Text style={styles.versionText}>Version 1.0.0</Text>
+              <Text style={styles.versionText}>Version 1.0.0</Text>
       </View>
-            </View>
           </ScrollView>
         </SafeAreaView>
       )}
@@ -2433,508 +2943,258 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F5F5F7',
+    backgroundColor: '#F0F2F5', // Standard government light background
   },
   scrollView: {
     flex: 1,
   },
+  scrollContentContainer: {
+    paddingBottom: isTablet ? 60 : 40,
+  },
   dashboardContainer: {
     flex: 1,
-    padding: isTablet ? 40 : 20,
-    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight + (isTablet ? 40 : 20) : (isTablet ? 60 : 20), // Increased top padding for iPad
-    alignItems: 'center',
-  },
-  contentWrapper: {
-    width: '100%',
-    maxWidth: isTablet ? 1024 : '100%',
+    paddingHorizontal: isTablet ? 24 : 16,
+    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight + 16 : (isTablet ? 24 : 16),
   },
   headerTitle: {
-    fontSize: isTablet ? 40 : 28, // Increased font size
-    fontWeight: '700',
-    color: '#1c1c1e',
-    marginBottom: isTablet ? 40 : 24, // Increased margin
+    fontSize: isTablet ? 28 : 22,
+    fontWeight: '600',
+    color: '#1C2833', // Dark navy text
+    marginBottom: isTablet ? 36 : 28,
+    paddingHorizontal: isTablet ? 8 : 4,
+    textAlign: 'center',
   },
   section: {
-    marginBottom: isTablet ? 40 : 24, // Increased margin
-    width: '100%',
-  },
-  columnSection: {
-    flex: 1,
-    marginHorizontal: isTablet ? 16 : 0, // Increased horizontal margin for columns
+    marginBottom: isTablet ? 24 : 20,
+    paddingHorizontal: isTablet ? 0 : 0,
   },
   sectionTitle: {
-    fontSize: isTablet ? 26 : 20, // Increased font size
+    fontSize: isTablet ? 20 : 17,
     fontWeight: '600',
-    color: '#1c1c1e',
-    marginBottom: isTablet ? 24 : 16, // Increased margin
-  },
-  twoColumnLayout: {
-    flexDirection: isTablet ? 'row' : 'column',
-    marginHorizontal: isTablet ? -16 : 0, // Adjusted negative margin to match columnSection
-  },
-  quickActionsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: isTablet ? 24 : 12, // Increased gap
-  },
-  actionCard: {
-    flex: 1,
-    minWidth: isTablet ? 220 : '45%', // Adjusted minWidth
-    padding: isTablet ? 30 : 16, // Increased padding
-    borderRadius: isTablet ? 24 : 16, // Increased radius
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 }, // Slightly increased shadow
-    shadowOpacity: 0.1,
-    shadowRadius: 10, // Slightly increased shadow
-    elevation: 5, // Slightly increased elevation
-  },
-  actionTitle: {
-    fontSize: isTablet ? 22 : 17, // Increased font size
-    fontWeight: '600',
-    color: '#fff',
-    marginBottom: 8, // Increased margin
-  },
-  actionSubtitle: {
-    fontSize: isTablet ? 16 : 13, // Increased font size
-    color: 'rgba(255, 255, 255, 0.85)', // Slightly less transparent
-  },
-  recentActivityCard: {
-    backgroundColor: '#fff',
-    borderRadius: isTablet ? 24 : 16, // Increased radius
-    padding: isTablet ? 40 : 24, // Increased padding
-    alignItems: 'center',
-    justifyContent: 'center', // Center content vertically
-    minHeight: isTablet ? 250 : 150, // Ensure minimum height
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 }, // Slightly increased shadow
-    shadowOpacity: 0.1,
-    shadowRadius: 10, // Slightly increased shadow
-    elevation: 5, // Slightly increased elevation
-  },
-  placeholderIcon: {
-    fontSize: isTablet ? 60 : 40,
-    marginBottom: 16,
-    opacity: 0.6,
-  },
-  noActivityText: {
-    fontSize: isTablet ? 22 : 17, // Increased font size
-    fontWeight: '600',
-    color: '#1c1c1e',
-    marginBottom: 10, // Increased margin
-  },
-  noActivitySubtext: {
-    fontSize: isTablet ? 18 : 15, // Increased font size
-    color: '#666',
-    textAlign: 'center', // Center text
-  },
-  statsGrid: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: isTablet ? 24 : 12, // Increased gap
-  },
-  statCard: {
-    flex: 1,
-    backgroundColor: '#fff',
-    borderRadius: isTablet ? 24 : 16, // Increased radius
-    padding: isTablet ? 30 : 16, // Increased padding
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 }, // Slightly increased shadow
-    shadowOpacity: 0.1,
-    shadowRadius: 10, // Slightly increased shadow
-    elevation: 5, // Slightly increased elevation
-  },
-  statNumber: {
-    fontSize: isTablet ? 36 : 24, // Increased font size
-    fontWeight: '700',
-    color: '#1c1c1e',
-    marginBottom: 6, // Increased margin
-  },
-  statLabel: {
-    fontSize: isTablet ? 16 : 13, // Increased font size
-    color: '#666',
-  },
-  versionText: {
-    fontSize: isTablet ? 16 : 13,
-    color: '#888', // Slightly darker color
-    textAlign: 'center',
-    marginTop: isTablet ? 40 : 24, // Increased margin
-    paddingBottom: isTablet ? 20 : 10, // Add padding at the bottom
-  },
-  header: {
-    padding: 20,
-    backgroundColor: '#fff',
-    alignItems: 'center',
+    color: '#2C3E50', // Official dark blue
+    marginBottom: isTablet ? 16 : 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#e1e1e1',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-    elevation: 3,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#1c1c1e',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  mainContainer: {
-    flex: 1,
-    padding: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  buttonContainer: {
-    width: '100%',
-    maxWidth: 400,
-    gap: 16,
-  },
-  scanButton: {
-    backgroundColor: '#007AFF',
-    paddingHorizontal: 30,
-    paddingVertical: 18,
-    borderRadius: 16,
-    shadowColor: '#007AFF',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
-    width: '100%',
-  },
-  scanButtonText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '600',
-    textAlign: 'center',
-  },
-  viewEventsButton: {
-    backgroundColor: '#5856D6',
-    shadowColor: '#5856D6',
-  },
-  viewScansButton: {
-    backgroundColor: '#34C759',
-    shadowColor: '#34C759',
-  },
-  resultContainer: {
-    backgroundColor: '#f8f9fa',
-    borderRadius: 12,
-    padding: 16,
-  },
-  resultRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(0,0,0,0.1)',
-  },
-  resultLabel: {
-    flex: 1,
-    fontSize: isTablet ? 16 : 15,
-    fontWeight: '500',
-    color: '#666',
-    marginRight: 12,
-  },
-  resultValue: {
-    flex: 2,
-    fontSize: isTablet ? 16 : 15,
-    color: '#1c1c1e',
-    textAlign: 'right',
-  },
-  actionButtons: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    padding: 20,
-    gap: 12,
-  },
-  button: {
-    flex: 1,
-    paddingVertical: 16,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 5,
-  },
-  saveButton: {
-    backgroundColor: '#34C759',
-  },
-  eventButton: {
-    backgroundColor: '#007AFF',
-  },
-  buttonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  backButton: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#007AFF',
-    position: 'absolute',
-    left: 20,
-    top: 20,
-  },
-  scanCard: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 20,
-    margin: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  scanHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-    paddingBottom: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e1e1e1',
-  },
-  scanDate: {
-    fontSize: 15,
-    color: '#666',
-    fontWeight: '500',
-  },
-  scanConfidence: {
-    fontSize: 15,
-    color: '#007AFF',
-    fontWeight: '600',
-  },
-  scanContent: {
-    marginBottom: 20,
-  },
-  travelInfoSection: {
-    marginTop: 20,
-    paddingTop: 20,
-    borderTopWidth: 1,
-    borderTopColor: '#e1e1e1',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: isTablet ? 40 : 20,
-  },
-  modalContent: {
-    backgroundColor: '#fff',
-    borderRadius: isTablet ? 20 : 16,
-    padding: isTablet ? 32 : 24,
-    width: '100%',
-    maxWidth: isTablet ? 600 : '100%',
-    maxHeight: '90%',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
-    elevation: 5,
-  },
-  modalTitle: {
-    fontSize: isTablet ? 28 : 24,
-    fontWeight: '700',
-    color: '#1c1c1e',
-    marginBottom: isTablet ? 24 : 20,
-    textAlign: 'center',
-  },
-  eventList: {
-    marginBottom: 16,
-  },
-  eventItem: {
-    backgroundColor: '#f8f9fa',
-    borderRadius: isTablet ? 16 : 12,
-    padding: isTablet ? 20 : 16,
-    marginBottom: 12,
-  },
-  eventName: {
-    fontSize: isTablet ? 20 : 18,
-    fontWeight: '600',
-    color: '#1c1c1e',
-    marginBottom: 8,
-  },
-  eventDescription: {
-    fontSize: isTablet ? 16 : 15,
-    color: '#666',
-    marginBottom: 8,
-  },
-  eventDate: {
-    fontSize: isTablet ? 14 : 13,
-    color: '#999',
-  },
-  scanCount: {
-    fontSize: isTablet ? 14 : 13,
-    color: '#007AFF',
-    fontWeight: '600',
-    marginTop: 4,
-  },
-  createEventForm: {
-    width: '100%',
-  },
-  modalInput: {
-    borderWidth: 1,
-    borderColor: '#e1e1e1',
-    borderRadius: isTablet ? 16 : 12,
-    padding: isTablet ? 16 : 12,
-    fontSize: isTablet ? 17 : 16,
-    backgroundColor: '#fff',
-    color: '#1c1c1e',
-    marginBottom: 16,
-  },
-  modalButtonContainer: {
-    marginTop: 8,
-    gap: 8,
-  },
-  modalButton: {
-    width: '100%',
-    paddingVertical: isTablet ? 16 : 14,
-    borderRadius: isTablet ? 16 : 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  modalButtonText: {
-    color: '#fff',
-    fontSize: isTablet ? 17 : 16,
-    fontWeight: '600',
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#f5f5f7',
-  },
-  loadingText: {
-    fontSize: 16,
-    color: '#666',
-    marginTop: 12,
-  },
-  errorContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#f5f5f7',
-    padding: 20,
-  },
-  errorText: {
-    fontSize: 16,
-    color: '#FF3B30',
-    textAlign: 'center',
-    marginBottom: 20,
-  },
-  errorButton: {
-    backgroundColor: '#FF3B30',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  errorButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
+    borderBottomColor: '#D1D1D6',
+    paddingBottom: 8,
   },
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: isTablet ? 24 : 16, // Increased margin
+    marginBottom: isTablet ? 14 : 10,
   },
   viewAllButton: {
-    fontSize: isTablet ? 18 : 14, // Increased font size
-    color: '#007AFF',
-    fontWeight: '600',
-  },
-  eventsScrollView: {
-    // Keep negative margins to allow cards to slightly overhang if needed
-    marginLeft: isTablet ? -30 : -20,
-    paddingLeft: isTablet ? 30 : 20,
-    marginRight: isTablet ? -30 : -20,
-    paddingRight: isTablet ? 30 : 20,
-  },
-  eventsScrollContent: {
-    paddingVertical: 12, // Add some vertical padding
-    gap: isTablet ? 24 : 16, // Use gap for spacing between cards
-  },
-  eventCard: {
-    backgroundColor: '#fff',
-    borderRadius: isTablet ? 24 : 16, // Increased radius
-    padding: isTablet ? 30 : 20, // Increased padding
-    // Remove marginRight, use gap in eventsScrollContent instead
-    width: isTablet ? 360 : 280, // Increased width
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 }, // Slightly increased shadow
-    shadowOpacity: 0.1,
-    shadowRadius: 10, // Slightly increased shadow
-    elevation: 5, // Slightly increased elevation
-  },
-  eventCardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 12, // Increased margin
-  },
-  eventCardTitle: {
-    fontSize: isTablet ? 20 : 16, // Increased font size
-    fontWeight: '600',
-    color: '#1c1c1e',
-    flex: 1,
-    marginRight: 10, // Increased margin
-  },
-  eventCardDate: {
-    fontSize: isTablet ? 15 : 12, // Increased font size
-    color: '#666',
-  },
-  eventCardDescription: {
-    fontSize: isTablet ? 16 : 14, // Increased font size
-    color: '#666',
-    marginBottom: 16, // Increased margin
-    lineHeight: isTablet ? 24 : 20, // Increased line height
-  },
-  eventCardFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  eventCardScans: {
-    fontSize: isTablet ? 15 : 13, // Increased font size
-    color: '#007AFF',
+    fontSize: isTablet ? 15 : 13,
+    color: '#1E5D9B', // Official mid-blue
     fontWeight: '500',
   },
-  noEventsCard: {
-    backgroundColor: '#fff',
-    borderRadius: isTablet ? 24 : 16, // Increased radius
-    padding: isTablet ? 40 : 20, // Increased padding
-    width: isTablet ? 360 : 280, // Increased width
+  quickActionsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    marginBottom: 0,
+  },
+  actionCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    width: '48%',
+    paddingVertical: isTablet ? 18 : 14,
+    paddingHorizontal: isTablet ? 16 : 12,
+    borderRadius: 8, // Less rounded, more official
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+    marginBottom: isTablet ? 18 : 14,
+    minHeight: isTablet ? 100 : 90,
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
+  },
+  iconContainer: {
+    width: isTablet ? 44 : 38,
+    height: isTablet ? 44 : 38,
+    borderRadius: 4, // Square-ish for official look
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: isTablet ? 16 : 12,
+    backgroundColor: '#E5E7EB', // Standard light grey
+  },
+  iconContainerBlue: { 
+    backgroundColor: '#103E7E', // Official government blue
+  },
+  iconContainerPurple: { 
+    backgroundColor: '#445069', // Muted official blue-grey 
+  },
+  iconContainerOrange: { 
+    backgroundColor: '#5D5D5D', // Official dark grey
+  },
+  iconContainerRed: { 
+    backgroundColor: '#942926', // Official government red
+  },
+  actionTextContainer: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  actionTitle: {
+    fontSize: isTablet ? 17 : 15,
+    fontWeight: '600',
+    color: '#1C2833',
+    marginBottom: 3,
+  },
+  actionSubtitle: {
+    fontSize: isTablet ? 14 : 12,
+    fontWeight: '400',
+    color: '#566573',
+    lineHeight: isTablet ? 18 : 16,
+  },
+  statsGrid: {
+    flexDirection: 'row',
+    gap: isTablet ? 14 : 10,
+    marginBottom: isTablet ? 24 : 20,
+  },
+  statCard: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8, // Less rounded, more official
+    paddingVertical: isTablet ? 20 : 16,
+    paddingHorizontal: isTablet ? 12 : 10,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 }, // Slightly increased shadow
+    shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
-    shadowRadius: 10, // Slightly increased shadow
-    elevation: 5, // Slightly increased elevation
+    shadowRadius: 2,
+    elevation: 2,
+    minHeight: isTablet ? 120 : 100,
+    gap: isTablet ? 10 : 8,
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
+  },
+  // Remove statCardEvents, statCardScans, statCardDate - no colorful tints
+  statIcon: { 
+    marginBottom: isTablet ? 8 : 6,
+    color: '#103E7E', // Official government blue
+  },
+  statNumber: {
+    fontSize: isTablet ? 28 : 24,
+    fontWeight: '600',
+    color: '#1C2833',
+  },
+  statLabel: {
+    fontSize: isTablet ? 14 : 12,
+    fontWeight: '500',
+    color: '#566573',
+    textAlign: 'center',
+  },
+  eventsScrollView: {
+    // No style needed here usually
+  },
+  eventsScrollContent: {
+    paddingVertical: 6,
+    paddingHorizontal: isTablet ? 2 : 1,
+    gap: isTablet ? 14 : 10,
+  },
+  eventCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8, // Less rounded, more official
+    padding: isTablet ? 18 : 14,
+    width: isTablet ? 280 : 240,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+    minHeight: isTablet ? 120 : 100,
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
+  },
+  eventCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    borderBottomWidth: 1, // Add a separator line
+    borderBottomColor: '#E5E7EB',
+    paddingBottom: 6,
+  },
+  eventCardIcon: {
+    marginRight: 8,
+    color: '#103E7E', // Official government blue
+  },
+  eventCardTitle: {
+    fontSize: isTablet ? 16 : 14,
+    fontWeight: '600',
+    color: '#1C2833',
+    flex: 1,
+  },
+  eventCardDescription: {
+    fontSize: isTablet ? 14 : 12,
+    fontWeight: '400',
+    color: '#566573',
+    lineHeight: isTablet ? 18 : 16,
+    marginBottom: 10,
+    flexGrow: 1,
+  },
+  eventCardFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 'auto',
+    borderTopWidth: 1, // Add a separator line
+    borderTopColor: '#E5E7EB',
+    paddingTop: 6,
+  },
+  eventCardFooterIcon: {
+    marginRight: 4,
+    color: '#103E7E', // Official government blue
+  },
+  eventCardScans: {
+    fontSize: isTablet ? 13 : 11,
+    color: '#103E7E', // Official government blue
+    fontWeight: '500',
+  },
+  noEventsCard: {
+    backgroundColor: '#F7F9FA', // Very light grey
+    borderRadius: 8, // Less rounded, more official
+    paddingVertical: isTablet ? 28 : 22,
+    paddingHorizontal: isTablet ? 24 : 18,
+    width: isTablet ? 280 : 240,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 1,
+    elevation: 1,
+    minHeight: isTablet ? 140 : 120,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
+    marginHorizontal: isTablet ? 2 : 1,
+  },
+  noEventsIcon: {
+    color: '#A9B2BC', // Grey blue
   },
   noEventsText: {
-    fontSize: isTablet ? 18 : 16, // Increased font size
+    fontSize: isTablet ? 16 : 14,
     fontWeight: '600',
-    color: '#1c1c1e',
-    marginBottom: 8, // Increased margin
+    color: '#2C3E50',
+    textAlign: 'center',
   },
   noEventsSubtext: {
-    fontSize: isTablet ? 16 : 14, // Increased font size
-    color: '#666',
+    fontSize: isTablet ? 14 : 12,
+    fontWeight: '400',
+    color: '#566573',
     textAlign: 'center',
+    lineHeight: isTablet ? 18 : 16,
+  },
+  versionText: {
+    fontSize: isTablet ? 12 : 10,
+    color: '#808B96',
+    textAlign: 'center',
+    marginTop: isTablet ? 16 : 12,
+    paddingBottom: isTablet ? 16 : 12,
   },
   reviewHeader: {
     flexDirection: 'row',
@@ -2943,14 +3203,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight + 16 : 16,
     paddingBottom: 16,
-    backgroundColor: '#fff',
+    backgroundColor: '#103E7E',
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(0,0,0,0.1)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 3,
+    borderBottomColor: '#0C3263',
   },
   backButton: {
     flexDirection: 'row',
@@ -2959,12 +3214,12 @@ const styles = StyleSheet.create({
   },
   backButtonText: {
     fontSize: isTablet ? 28 : 24,
-    color: '#007AFF',
+    color: '#FFFFFF',
     marginRight: 4,
   },
   backButtonLabel: {
     fontSize: isTablet ? 17 : 16,
-    color: '#007AFF',
+    color: '#FFFFFF',
     fontWeight: '500',
   },
   headerSpacer: {
@@ -2973,12 +3228,12 @@ const styles = StyleSheet.create({
   reviewTitle: {
     fontSize: isTablet ? 20 : 18,
     fontWeight: '600',
-    color: '#1c1c1e',
+    color: '#FFFFFF',
     textAlign: 'center',
   },
   reviewScrollView: {
     flex: 1,
-    backgroundColor: '#f5f5f7',
+    backgroundColor: '#F0F2F5',
   },
   reviewContent: {
     padding: 20,
@@ -2993,15 +3248,19 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   reviewSectionTitle: {
-    fontSize: isTablet ? 22 : 20,
+    fontSize: isTablet ? 20 : 18,
     fontWeight: '600',
-    color: '#1c1c1e',
+    color: '#1C2833',
+    marginBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#D1D1D6',
+    paddingBottom: 6,
   },
   confidenceTag: {
-    backgroundColor: '#34C759',
+    backgroundColor: '#2C3E50',
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 12,
+    borderRadius: 4,
   },
   confidenceText: {
     color: '#fff',
@@ -3010,13 +3269,15 @@ const styles = StyleSheet.create({
   },
   reviewCard: {
     backgroundColor: '#fff',
-    borderRadius: isTablet ? 20 : 16,
-    padding: isTablet ? 24 : 20,
+    borderRadius: 8,
+    padding: isTablet ? 20 : 16,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
     elevation: 3,
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
   },
   reviewActions: {
     flexDirection: 'row',
@@ -3026,60 +3287,90 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderTopWidth: 1,
     borderTopColor: 'rgba(0,0,0,0.1)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 3,
   },
   reviewActionButton: {
     flex: 1,
-    paddingVertical: isTablet ? 16 : 14,
-    borderRadius: isTablet ? 16 : 14,
+    paddingVertical: isTablet ? 14 : 12,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    flexDirection: 'row',
   },
   saveButton: {
-    backgroundColor: '#34C759',
+    backgroundColor: '#103E7E',
   },
   eventButton: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#2C3E50',
   },
   reviewActionButtonText: {
     color: '#fff',
-    fontSize: isTablet ? 17 : 16,
+    fontSize: isTablet ? 16 : 15,
     fontWeight: '600',
   },
-  scanSection: {
-    marginTop: 16,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#e0e0e0',
+  
+  // Update styles for the Label section
+  labelSection: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    padding: isTablet ? 20 : 16,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
   },
-  scanSectionTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#1c1c1e',
-    marginBottom: 12,
-  },
-  noScansText: {
+  labelTitle: {
     fontSize: isTablet ? 18 : 16,
     fontWeight: '600',
-    color: '#1c1c1e',
-    marginBottom: 8,
+    color: '#1C2833',
+    marginBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+    paddingBottom: 6,
   },
-  noScansSubtext: {
+  labelInput: {
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: isTablet ? 16 : 14,
+    backgroundColor: '#F9F9FB',
+  },
+  
+  // Update styles for subsections in Travel Information
+  subsectionTitle: {
+    fontSize: isTablet ? 17 : 15,
+    fontWeight: '600',
+    color: '#2C3E50',
+    marginBottom: 12,
+    paddingBottom: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  
+  // Update input styles
+  input: {
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
+    borderRadius: 8,
+    padding: 12,
     fontSize: isTablet ? 15 : 14,
-    color: '#666',
+    backgroundColor: '#F9F9FB',
+  },
+  
+  // Update field label styles
+  fieldLabel: {
+    fontSize: isTablet ? 15 : 13,
+    fontWeight: '500',
+    color: '#566573',
+    marginBottom: 8,
   },
   eventDetailsContainer: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: '#F0F2F5', // Match app background
     padding: 20,
   },
   eventDetailsHeader: {
@@ -3087,342 +3378,422 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 20,
+    backgroundColor: '#103E7E', // Government blue
+    marginHorizontal: -20, // Compensate for padding
+    marginTop: -20, // Compensate for padding
+    paddingHorizontal: 20,
+    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight + 16 : 16,
+    paddingBottom: 16,
+    borderBottomWidth: 4,
+    borderBottomColor: '#8F9CB3', // Lighter blue-grey border
   },
   eventDetailsTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#333',
+    fontSize: isTablet ? 22 : 20,
+    fontWeight: '600',
+    color: '#FFFFFF', // White text on blue background
   },
-  closeButton: {
-    padding: 10,
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderWidth: 2,
+    borderColor: '#103E7E', // Government blue
+    borderRadius: 4, // Square-ish
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
   },
-  closeButtonText: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#007AFF',
+  checkboxSelected: {
+    backgroundColor: '#103E7E', // Government blue
   },
-  scansSection: {
-    flex: 1,
-  },
-  scansList: {
-    flex: 1,
+  checkboxText: {
+    fontSize: isTablet ? 16 : 14,
+    fontWeight: '600',
+    color: '#1C2833',
   },
   scanCard: {
-    backgroundColor: '#f8f9fa',
-    borderRadius: 10,
-    padding: 15,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    padding: 16,
     marginBottom: 15,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowRadius: 2,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
   },
-  scanHeader: {
+  scanItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 12,
+  },
+  scanCardContent: {
+    flex: 1,
+    borderRadius: 8,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    elevation: 1,
+    overflow: 'hidden',
+  },
+  scanCardHeader: {
+    backgroundColor: '#F0F2F5',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#D1D1D6',
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
   },
-  scanTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#333',
-  },
-  scanDetails: {
-    marginBottom: 15,
-  },
-  travelInfo: {
-    borderTopWidth: 1,
-    borderTopColor: '#e0e0e0',
-    paddingTop: 15,
-  },
-  travelInfoTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#333',
-    marginBottom: 10,
-  },
-  eventDetailsScroll: {
+  scanCardTitle: {
+    fontSize: isTablet ? 16 : 14,
+    fontWeight: '600',
+    color: '#1C2833',
     flex: 1,
   },
-  travelInfoSection: {
-    marginTop: 20,
-    paddingTop: 20,
+  scanCardDate: {
+    fontSize: isTablet ? 13 : 11,
+    color: '#566573',
+  },
+  scanCardBody: {
+    padding: 12,
+  },
+  scanDetailRow: {
+    flexDirection: 'row',
+    marginBottom: 6,
+  },
+  scanDetailLabel: {
+    fontSize: isTablet ? 14 : 12,
+    color: '#566573',
+    width: 100,
+    fontWeight: '500',
+  },
+  scanDetailValue: {
+    fontSize: isTablet ? 14 : 12,
+    color: '#1C2833',
+    flex: 1,
+    fontWeight: '400',
+  },
+  scanCardSection: {
+    marginTop: 8,
+    paddingTop: 8,
     borderTopWidth: 1,
-    borderTopColor: '#e0e0e0',
+    borderTopColor: '#E5E7EB',
   },
-  travelInfoForm: {
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    padding: 15,
-    marginTop: 10,
-  },
-  saveButton: {
-    backgroundColor: '#007AFF',
-    padding: 15,
-    borderRadius: 10,
-    alignItems: 'center',
-    marginTop: 20,
-  },
-  saveButtonDisabled: {
-    backgroundColor: '#ccc',
-  },
-  saveButtonText: {
-    color: '#fff',
-    fontSize: 16,
+  scanCardSectionTitle: {
+    fontSize: isTablet ? 14 : 12,
     fontWeight: '600',
+    color: '#103E7E',
+    marginBottom: 6,
   },
-  sectionContainer: {
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    padding: 15,
-    marginBottom: 15,
+  eventInfoSection: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    marginBottom: 20,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
+  },
+  eventDetailsDescription: {
+    fontSize: isTablet ? 15 : 13,
+    color: '#566573',
+    marginTop: 8,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    backgroundColor: '#F0F2F5',
+    borderRadius: 8,
+    padding: 0,
+    width: '100%',
+    maxWidth: isTablet ? 650 : 500,
+    maxHeight: '85%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+    overflow: 'hidden',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#D1D1D6',
+  },
+  modalTitle: {
+    fontSize: isTablet ? 20 : 18,
+    fontWeight: '600',
+    color: '#1C2833',
+  },
+  modalCloseButton: {
+    padding: 8,
+  },
+  eventItem: {
+    flexDirection: 'row',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8, 
+    padding: 0,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    elevation: 1,
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
+    overflow: 'hidden',
+  },
+  eventItemHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0F2F5',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#D1D1D6',
+  },
+  eventItemBody: {
+    padding: 12,
+  },
+  eventItemIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#E5E7EB',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  eventName: {
+    fontSize: isTablet ? 16 : 14,
+    fontWeight: '600',
+    color: '#1C2833',
+    flex: 1,
+  },
+  eventList: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 8,
+  },
+  // EventDetails styles (add to StyleSheet)
+  eventDetailHeader: {
+    backgroundColor: '#103E7E',
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#0C3263',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  eventDetailTitle: {
+    color: '#FFFFFF',
+    fontSize: isTablet ? 22 : 18,
+    fontWeight: '600',
+    flex: 1,
+  },
+  eventDetailSection: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    marginHorizontal: 16,
+    marginTop: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    elevation: 1,
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
+    overflow: 'hidden',
+  },
+  eventDetailSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#F0F2F5',
+    borderBottomWidth: 1,
+    borderBottomColor: '#D1D1D6',
+  },
+  eventDetailSectionTitle: {
+    fontSize: isTablet ? 16 : 14,
+    fontWeight: '600',
+    color: '#1C2833',
+  },
+  scanCard: {
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+    padding: 12,
+  },
+  scanCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  scanCardTitle: {
+    fontSize: isTablet ? 15 : 14,
+    fontWeight: '600',
+    color: '#103E7E',
+    flex: 1,
+    marginLeft: 8,
+  },
+  scanCardDate: {
+    fontSize: 12,
+    color: '#64748B',
+  },
+  scanDetailRow: {
+    flexDirection: 'row',
+    marginTop: 4,
+    paddingLeft: 30,
+  },
+  scanDetailLabel: {
+    fontSize: 13,
+    color: '#64748B',
+    width: 90,
+    fontWeight: '500',
+  },
+  scanDetailValue: {
+    fontSize: 13,
+    color: '#1C2833',
+    flex: 1,
+  },
+  exportButton: {
+    backgroundColor: '#103E7E',
+    borderRadius: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    marginHorizontal: 16,
+    marginTop: 16,
+    marginBottom: isTablet ? 20 : 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  exportButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '500',
+    fontSize: isTablet ? 16 : 14,
+    marginLeft: 8,
+  },
+  exportButtonDisabled: {
+    backgroundColor: '#A0AEC0',
+  },
+  governmentHeader: {
+    backgroundColor: '#103E7E', // Official government blue
+    paddingVertical: 20,
+    paddingHorizontal: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center', // Center content horizontally
+    borderBottomWidth: 1,
+    borderBottomColor: '#0C3263',
+    marginHorizontal: -16,
+    marginTop: -16,
+    marginBottom: 24,
+  },
+  headerTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center', // Center content
+  },
+  headerTitleSeal: {
+    width: isTablet ? 56 : 40, // Larger seal
+    height: isTablet ? 56 : 40, // Larger seal
+    marginRight: 14,
+    borderRadius: 28,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#FFFFFF',
+  },
+  headerTitle: {
+    fontSize: isTablet ? 30 : 22,
+    fontWeight: '700',
+    color: '#1C2833', // Update color to white in the JSX
+    marginBottom: 0, // Remove bottom margin
+    paddingHorizontal: isTablet ? 8 : 4,
+    textAlign: 'center',
+  },
+  sealImage: {
+    width: '90%',
+    height: '90%',
+    resizeMode: 'contain',
   },
   travelInfoGrid: {
-    gap: 15,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    padding: isTablet ? 20 : 16,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
   },
   travelInfoRow: {
     flexDirection: 'row',
-    gap: 15,
+    marginBottom: 16,
+    gap: 12,
   },
   travelInfoField: {
     flex: 1,
   },
-  fieldLabel: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 5,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-    borderRadius: 8,
-    padding: 10,
-    fontSize: 16,
-    backgroundColor: '#f8f9fa',
-  },
-  formSection: {
-    marginBottom: 20,
-    padding: 15,
-    backgroundColor: '#f8f9fa',
-    borderRadius: 10,
-  },
-  formSectionTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 15,
-  },
-  continueButton: {
-    backgroundColor: '#007AFF',
-    padding: 15,
-    borderRadius: 10,
-    alignItems: 'center',
-    marginTop: 20,
-  },
-  continueButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  sectionNote: {
-    fontSize: 14,
-    color: '#666',
-    fontStyle: 'italic',
-    marginBottom: 15,
-  },
-  signatureSection: {
-    flex: 1,
-    padding: 20,
-    backgroundColor: '#fff',
-  },
-  signatureWrapper: {
-    flex: 1,
-    height: 400,
-    marginVertical: 20,
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    overflow: 'hidden',
-  },
-  buttonContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 12,
-    marginTop: 20,
-  },
-  clearButton: {
-    flex: 1,
-    backgroundColor: '#FF3B30',
-    padding: 15,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  confirmButton: {
-    flex: 1,
-    backgroundColor: '#34C759',
-    padding: 15,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  buttonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  signaturePageContainer: {
-    flex: 1,
-    backgroundColor: '#fff',
-  },
-  signaturePageHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
+  searchContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
+    borderBottomColor: '#D1D1D6',
   },
-  signaturePageContent: {
-    flex: 1,
-    padding: 20,
-  },
-  signaturePageSubtitle: {
-    fontSize: 16,
-    color: '#666',
-    textAlign: 'center',
-    marginBottom: 20,
-  },
-  signatureImageContainer: {
-    height: 120,
-    backgroundColor: '#f8f9fa',
+  searchInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0F2F5',
     borderRadius: 8,
-    padding: 8,
-    marginTop: 8,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
   },
-  savedSignatureImage: {
-    width: '100%',
-    height: '100%',
-    backgroundColor: '#fff',
+  searchInput: {
+    flex: 1,
+    paddingVertical: 10,
+    fontSize: isTablet ? 15 : 14,
+    color: '#1C2833',
   },
-  labelSection: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 20,
+  noResultsContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 40,
   },
-  labelTitle: {
-    fontSize: 16,
+  noResultsText: {
+    fontSize: isTablet ? 16 : 14,
     fontWeight: '600',
-    color: '#1c1c1e',
+    color: '#566573',
+    marginTop: 12,
     marginBottom: 8,
   },
-  labelInput: {
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-    borderRadius: 8,
-    padding: 12,
-    fontSize: 16,
-    backgroundColor: '#f8f9fa',
-  },
-  scanListItem: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    marginBottom: 12,
-    overflow: 'hidden',
-  },
-  scanListHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 16,
-    backgroundColor: '#f8f9fa',
-  },
-  scanLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1c1c1e',
-  },
-  scanDate: {
-    fontSize: 14,
-    color: '#666',
-  },
-  scanListPreview: {
-    padding: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
-  },
-  previewText: {
-    fontSize: 14,
-    color: '#666',
-  },
-  expandedContent: {
-    padding: 16,
-    backgroundColor: '#fff',
-  },
-  scanPreview: {
-    marginTop: 8,
-    marginBottom: 12,
-  },
-  viewDetailsText: {
-    fontSize: 14,
-    color: '#007AFF',
-    textAlign: 'right',
-    fontWeight: '500',
-  },
-  signatureImageContainer: {
-    height: 200,
-    backgroundColor: '#f8f9fa',
-    borderRadius: 8,
-    padding: 8,
-    marginTop: 8,
-  },
-  savedSignatureImage: {
-    width: '100%',
-    height: '100%',
-    backgroundColor: '#fff',
-  },
-  subsectionTitle: {
-    fontSize: isTablet ? 18 : 16,
-    fontWeight: '600',
-    color: '#1c1c1e',
-    paddingBottom: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
-    marginBottom: 12
-  },
-  pdfButton: {
-    backgroundColor: '#34C759',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-    minWidth: 80,
-    alignItems: 'center',
-  },
-  pdfButtonDisabled: {
-    backgroundColor: '#8E8E93',
-  },
-  pdfButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  eventActionsContainer: {
-    marginVertical: 16,
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-  },
-  newScanButton: {
-    backgroundColor: '#007AFF',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  newScanButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '600',
+  noResultsSubtext: {
+    fontSize: isTablet ? 14 : 12,
+    color: '#8E8E93',
+    textAlign: 'center',
   },
 });
